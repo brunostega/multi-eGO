@@ -44,7 +44,7 @@ def read_topologies(top):
         if name in exclude: continue
         res.append([r.name for r in topology.molecules.values().mapping[name][0].residues])
         atoms.append([len(r.atoms) for r in topology.molecules.values().mapping[name][0].residues])
-        atoms_name.append(np.array([ a.type for a in topology.molecules.values().mapping[name][0].atoms]))
+        atoms_name.append(np.array([ a.name for a in topology.molecules.values().mapping[name][0].atoms]))
         atoms_name_per_res.append([ [a.type for a in r.atoms] for r in topology.molecules.values().mapping[name][0].residues])
         tot_num_atoms.append(np.sum(np.array([len(r.atoms) for r in topology.molecules.values().mapping[name][0].residues])))
     top_df["atoms_name"] = atoms_name
@@ -56,7 +56,7 @@ def read_topologies(top):
     return topology,  top_df
 
 def atom_element(names):
-    return np.array([n[0] for n in names])
+    return np.array([n for n in names])
 
 def check_inputs(top_df_input, top_df_output, args):
     mat = pd.read_csv(args.input_mat,names=["mi", "ai", "mj", "aj", "c12dist", "p", "cutoff"],  sep="\s+")
