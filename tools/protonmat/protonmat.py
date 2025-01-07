@@ -113,6 +113,7 @@ This tools modifies an input matrix to change the protonation state accordingly 
     parser.add_argument('--output_top'  , type=str,  required=True , default=None, help='List of residue ranges of the domains')
     parser.add_argument('--out_name'    , type=str,  required=False, default=""  , help='Target topology (the topology of the final full lenght structure)')
     parser.add_argument('--out'         , type=str,  required=False, default="." , help='List of paths of each domain associated to the ranges')
+    parser.add_argument('--H_name'         , type=str,  required=False, default="H" , help='List of paths of each domain associated to the ranges')
 
     args = parser.parse_args()
   
@@ -125,7 +126,7 @@ mat, MOL_I, MOL_J = check_inputs(top_df, out_top_df, args)
 
 mat["ai_name"] = np.array(list(itertools.product(top_df["atoms_name"][MOL_I],top_df["atoms_name"][MOL_J]))).T[0]
 mat["aj_name"] = np.array(list(itertools.product(top_df["atoms_name"][MOL_I],top_df["atoms_name"][MOL_J]))).T[1]
-mat_noH = mat.loc[~(mat["ai_name"].str.startswith("H")) & (~(mat["aj_name"].str.startswith("H")))]
+mat_noH = mat.loc[(~(mat["ai_name"].str.startswith(args.H_name)) | ((mat["ai_name"] == args.H_name))) & ((~(mat["aj_name"].str.startswith(args.H_name))) | ((mat["aj_name"] == args.H_name))) ]
 
 
 mat_out = pd.DataFrame()
@@ -142,14 +143,15 @@ mat_out["mj"]  = np.ones(len(out_top_df["atoms_name"][MOL_I])*len(out_top_df["at
 mat_out["aj"] = np.array(list(itertools.product(np.arange(1,N_atom_out_i+1),np.arange(1,N_atom_out_j+1)))).T[1]
 
 # First define 0 entries and overwrite where atom != H
+where_H = (~(mat_out["ai_name"].str.startswith(args.H_name)) | ((mat_out["ai_name"] == args.H_name))) & ((~(mat_out["aj_name"].str.startswith(args.H_name))) | ((mat_out["aj_name"] == args.H_name)))
 mat_out["c12dist"] = np.zeros(N_atom_out_i*N_atom_out_j)
-mat_out.loc[~(mat_out["ai_name"].str.startswith("H")) & (~(mat_out["aj_name"].str.startswith("H"))), "c12dist"] = mat_noH["c12dist"].to_numpy()
+mat_out.loc[where_H, "c12dist"] = mat_noH["c12dist"].to_numpy()
 
 mat_out["p"] = np.zeros(N_atom_out_i*N_atom_out_j)
-mat_out.loc[~(mat_out["ai_name"].str.startswith("H")) & (~(mat_out["aj_name"].str.startswith("H"))), "p"]       = mat_noH["p"].to_numpy()
+mat_out.loc[where_H, "p"]       = mat_noH["p"].to_numpy()
 
 mat_out["cutoff"] = np.zeros(N_atom_out_i*N_atom_out_j)
-mat_out.loc[~(mat_out["ai_name"].str.startswith("H")) & (~(mat_out["aj_name"].str.startswith("H"))), "cutoff"]  = mat_noH["cutoff"].to_numpy()
+mat_out.loc[where_H, "cutoff"]  = mat_noH["cutoff"].to_numpy()
 
 
 write_mat(mat_out, f"{args.out}/{args.out_name}{os.path.basename(args.input_mat)}.gz")
