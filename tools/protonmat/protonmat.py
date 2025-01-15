@@ -8,52 +8,10 @@ import pandas as pd
 import itertools
 import gzip
 
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..",))
+from tools.matrix_manipulator import functions 
+
 COLUMNS = ["mi", "ai", "mj", "aj", "c12dist", "p", "cutoff"]
-exclude = ["SOL", "CL","NA"]
-
-def read_topologies(top):
-    '''
-    Reads the input topologies using parmed. Ignores warnings to prevent printing
-    of GromacsWarnings regarding 1-4 interactions commonly seen when using
-    parmed in combination with multi-eGO topologies.
-
-    Parameters
-    ----------
-    mego_top : str
-        Path to the multi-eGO topology obtained from gmx pdb2gmx with multi-ego-basic force fields
-    target_top : str
-        Path to the toplogy of the system on which the analysis is to be performed
-    '''
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        topology = pmd.load_file(top)
-
-    #Return topology and a dataframe with:
-    #molecule name, number of molecules?, residue list, atom_list_per_residue 
-    top_df = pd.DataFrame()
-    n_mol=len(list(topology.molecules.keys()))
-    mol_names=list(topology.molecules.keys())
-    top_df["name"] = [m for m in mol_names if m not in exclude]
-    mol_list=np.arange(1,n_mol+1,1)
-    res = []
-    atoms = []
-    atoms_name_per_res = []
-    atoms_name = []
-    tot_num_atoms = []
-    for name in mol_names:
-        if name in exclude: continue
-        res.append([r.name for r in topology.molecules.values().mapping[name][0].residues])
-        atoms.append([len(r.atoms) for r in topology.molecules.values().mapping[name][0].residues])
-        atoms_name.append(np.array([ a.name for a in topology.molecules.values().mapping[name][0].atoms]))
-        atoms_name_per_res.append([ [a.type for a in r.atoms] for r in topology.molecules.values().mapping[name][0].residues])
-        tot_num_atoms.append(np.sum(np.array([len(r.atoms) for r in topology.molecules.values().mapping[name][0].residues])))
-    top_df["atoms_name"] = atoms_name
-    top_df["residues"] = res
-    top_df["N_atoms_per_res"] = atoms
-    top_df["Ntot_atoms"] = tot_num_atoms
-    top_df["atoms_name_per_res"] = atoms_name_per_res
-    
-    return topology,  top_df
 
 def atom_element(names):
     return np.array([n for n in names])
@@ -83,7 +41,6 @@ def check_inputs(top_df_input, top_df_output, args):
         raise ValueError(f'Number of elements in input matrix is not compatible with the number of atoms in topology: matrix : {len(mat["ai"])} , topology mol_{MOL_I+1} {len(top_df_input["atoms_name"].to_numpy()[MOL_I])} - mol_{MOL_J +1 } {len(top_df_input["atoms_name"].to_numpy()[MOL_J])}' )
 
     return mat, MOL_I, MOL_J
-
 
 def write_mat(mat_out, output_file):
     #format
@@ -116,18 +73,16 @@ This tools modifies an input matrix to change the protonation state accordingly 
     parser.add_argument('--H_name'         , type=str,  required=False, default="H" , help='List of paths of each domain associated to the ranges')
 
     args = parser.parse_args()
-  
 
+top, top_df = functions.read_topologies(args.input_top)
+out_top, out_top_df = functions.read_topologies(args.output_top)
 
-top, top_df = read_topologies(args.input_top)
-out_top, out_top_df = read_topologies(args.output_top)
-
+# Check inputs
 mat, MOL_I, MOL_J = check_inputs(top_df, out_top_df, args)
 
 mat["ai_name"] = np.array(list(itertools.product(top_df["atoms_name"][MOL_I],top_df["atoms_name"][MOL_J]))).T[0]
 mat["aj_name"] = np.array(list(itertools.product(top_df["atoms_name"][MOL_I],top_df["atoms_name"][MOL_J]))).T[1]
 mat_noH = mat.loc[(~(mat["ai_name"].str.startswith(args.H_name)) | ((mat["ai_name"] == args.H_name))) & ((~(mat["aj_name"].str.startswith(args.H_name))) | ((mat["aj_name"] == args.H_name))) ]
-
 
 mat_out = pd.DataFrame()
 N_atom_out_i = len(out_top_df["atoms_name"][MOL_I])
@@ -153,5 +108,5 @@ mat_out.loc[where_H, "p"]       = mat_noH["p"].to_numpy()
 mat_out["cutoff"] = np.zeros(N_atom_out_i*N_atom_out_j)
 mat_out.loc[where_H, "cutoff"]  = mat_noH["cutoff"].to_numpy()
 
-
+# Write output matrix
 write_mat(mat_out, f"{args.out}/{args.out_name}{os.path.basename(args.input_mat)}.gz")

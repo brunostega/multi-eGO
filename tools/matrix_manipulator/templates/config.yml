@@ -1,31 +1,27 @@
 ---
-action: split/join/merge 
+# action: split/join/merge 
 # split: split the training sim in ranges given by the domains
 # join:  join the rc and inter_domain_rc
 # merge: merge multiple trainings of single portions of proteins (different states for examples) with the full lenght ("basic") training 
 
 background_mat: 
-  path_top: /path/background_top
-  path_mat: /path/background_mat 
-  mego: True/False # True if we join prior and inter_domain_prior, False if we do split or merge
+  path_top: "/mnt/data/bruno/mego_Bruno/make_frankenstein/target_top/topol_renumered.top"
+  path_mat: "/mnt/data/bruno/mego_Bruno/make_frankenstein/target_top/intramat_1_1_nosuflide.ndx.gz"
+  # mego: True/False # True if we join prior and inter_domain_prior, False if we do split or merge
 
 # if action == split or join domains should not contain path_math
 domains:
-  domain_name1:
-    path_top: "/path/to/system1"
-    path_mat: "/path/to/file_of_system1"
-    range: "property_of_system_1"
-  domain_name2:
-    path_top: "/path/to/system2"
-    path_mat: "/path/to/file_of_system2"
-    range: "property_of_system_2"
-  domain_name3:
-    path_top: "/path/to/system3"
-    path_mat: "/path/to/file_of_system3"
-    range: "property_of_system_3"
-    
-# if action == join 
-inter_domain_mat_prior:
-    path_top: /path/background_top
-    path_mat: /path/background_mat 
-    mego: True
+  G2:
+    path_top: "/mnt/data/bruno/mego_Bruno/make_frankenstein/02_makemat_modified/G2/topol.top"
+    path_mat: "/mnt/data/bruno/mego_Bruno/make_frankenstein/02_makemat_modified/G2/intramat_1_1.ndx"
+    range: "181-289"
+  G3:
+    path_top: "/mnt/data/bruno/mego_Bruno/make_frankenstein/02_makemat_modified/G3/topol.top"
+    path_mat: "/mnt/data/bruno/mego_Bruno/make_frankenstein/02_makemat_modified/G3/intramat_1_1.ndx"
+    range: "293-393"
+
+# # if action == join 
+# inter_domain_mat_prior:
+#     path_top: /path/background_top
+#     path_mat: /path/background_mat 
+#     mego: True
