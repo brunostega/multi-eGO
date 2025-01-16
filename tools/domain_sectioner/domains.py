@@ -1,13 +1,21 @@
 import numpy as np
 import argparse
 import os
+
 # import parmed as pmd
 import warnings
+
 # import pandas as pd
 import sys
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..",))
-from src.multiego.util import mat_modif_functions as functions 
+sys.path.append(
+    os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "..",
+    )
+)
+from src.multiego.util import mat_modif_functions as functions
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TODO!")
@@ -22,7 +30,9 @@ if __name__ == "__main__":
         required=True,
     )
     parser.add_argument("--out", type=str, default=".", help="path for ouput")
-    parser.add_argument("--invert", action="store_true", default=False, help="Invert domain mask: Learn all but in the domain ranges")
+    parser.add_argument(
+        "--invert", action="store_true", default=False, help="Invert domain mask: Learn all but in the domain ranges"
+    )
 
     args = parser.parse_args()
 

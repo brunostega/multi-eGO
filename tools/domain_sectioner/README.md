@@ -40,4 +40,7 @@
 
 ### Examples of Usage
 
-1. Define domains using two non-overlapping ranges:  
+1. Define domains using two non-overlapping ranges: 
+
+## TEST
+python domains.py --intra input/intramat_1_1.ndx.gz --top input/topol.top --dom_res 1-30 50-90 
