@@ -1,27 +1,18 @@
 import os
-import re
 import sys
-import tempfile
 import argparse
-import itertools
-import multiprocessing
 import numpy as np
 import pandas as pd
-import parmed as pmd
+# import parmed as pmd
 import time
-from datetime import datetime 
-import warnings
-import gzip
-import tarfile
+# import warnings
+# import gzip
+# import tarfile
 import h5py
 import yaml
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..",))
-
 from tools.matrix_manipulator import functions
-from src.multiego.io import read_config
-from src.multiego import io
-from src.multiego.arguments import args_dict
 
 
 
@@ -29,7 +20,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="join domains matrices and a full lenght matrix") 
     parser.add_argument('--config'   , type=str,  default=None, help='List of paths associated to the intramat for each domain')
     parser.add_argument('--check_overlap'     , type=bool, default=True , action=argparse.BooleanOptionalAction, help="If true checks overlap of matrices domains. default true, but memory expensive")
-    parser.add_argument('--check_element'     , type=bool, default=True , action=argparse.BooleanOptionalAction, help="If true checks element differences betweeen domain top and global top. default true")
+    parser.add_argument('--check_element'     , type=bool, default=False , action=argparse.BooleanOptionalAction, help="If true checks element differences betweeen domain top and global top. default true")
     args = parser.parse_args()
 
 if args.config is not None:
@@ -104,20 +95,13 @@ for i,intra in enumerate(paths_intramats):
     n_atoms_start = topol_domains[i]["N_tot_atoms"][index_mi-1]
 
     #find start and ending corresponding to the residues in input
-    # TODO find atom end can be modified?
     end   = functions.find_atom_end(topology, ranges[i][1])
     start = functions.find_atom_start(topology, ranges[i][0])
-    
-    #check if the residue is the last of the target topology and adjust the end accordingly
-    if ranges[i][1] < len(top_df["residues"][0]): 
-        end_appo = end
-    else:
-        end_appo = end -1
 
     print("     Target:")
-    print("         Atoms start, end:", start, end_appo)
-    print("         Lenght range target: ", end_appo -start)
-    print("         Residues of start and end",topology.atoms[start], topology.atoms[end_appo])
+    print("         Atoms start, end:", start, end)
+    print("         Lenght range target: ", end + 1 -start)
+    print("         Residues of start and end",topology.atoms[start], topology.atoms[end])
     print(f"    Domain:")
     print("         Number of atoms pre terminal removal :",n_atoms_start)
 
@@ -140,11 +124,11 @@ for i,intra in enumerate(paths_intramats):
         intra_appo = np.delete(intra_appo, mmask, axis=1)
         n_atoms_after = len(intra_appo[0])/topol_domains[i]["N_tot_atoms"][index_mj-1] 
 
-    if float(end -start)!=n_atoms_after:
+    if float(end +1 -start)!=n_atoms_after:
         print(f"    Number of atoms in full system is not compatible with number of atoms in matrix after terminal removal: {end -start} vs {n_atoms_after}")
         exit()
 
-    print(f"    Number of atoms Target vs Domain: {end -start} vs {n_atoms_after}")
+    print(f"    Number of atoms Target vs Domain: {end + 1 -start} vs {n_atoms_after}")
     intramats.append(intra_appo)
     print(f"Loaded intramat {intra} in {time.time()-start_time:.2f} s\n")
 
@@ -168,7 +152,7 @@ column_indices = np.array(column_indices)
 
 #initializing all 8 columns
 dim_matrix = len(indices)*len(indices_2)
-final_intramat = np.zeros((8,dim_matrix))
+final_intramat = np.zeros((7,dim_matrix))
 
 #write indices
 final_intramat[0] = np.zeros(dim_matrix)+index_mi

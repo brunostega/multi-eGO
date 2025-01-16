@@ -1,11 +1,7 @@
 import numpy as np 
-import sys
-import argparse
-import os
 import parmed as pmd
 import warnings
 import pandas as pd
-import itertools
 import gzip
 
 exclude = ["SOL", "CL","NA"]
@@ -76,62 +72,44 @@ def mask_terminals(top_df, i,ranges,intra, n_atoms_start, column):
 
 
 def find_atom_start(top, res_num):
-    '''
-    Finds the starting atom associated to the residue 
-    '''
+    """
+    Finds the starting atom associated to the residue
+    """
     atom_idx = 0
 
-    for i in range(res_num-1):
+    for i in range(res_num - 1):
         atom_idx += len(top.residues[i].atoms)
 
     return atom_idx
 
-def find_atom_end(top, res_num):
-    '''
-    Finds the ending atom associated to the residue 
-    '''
-    atom_idx = 0
-    n_atoms = len(top.atoms)
-    n_res   = len(top.residues)
-    if(res_num==n_res):
-        return n_atoms
-    else:
-        for i in range(res_num):
-            atom_idx += len(top.residues[i].atoms)
 
-        return atom_idx
+def find_atom_end(top, res_num):
+    """
+    Finds the ending atom associated to the residue
+    """
+    atom_idx = 0
+
+    for i in range(res_num):
+        atom_idx += len(top.residues[i].atoms)
+
+    return atom_idx - 1
 
 def dom_range(ranges_str):
-    '''
-    Reads the ranges given in input as a string and puts them in output 
-    as a list of tuples
-    '''
-    doms = []
+    """
+    Reads the ranges given in input as a string and puts them in output
+    as a list of tuples checking that the ranges are non-decreasing and non-overlapping
+    """
+
     print("\nReading domain ranges in which inserting intramats")
-    for i in range(len(ranges_str)):
-       print(ranges_str[i])
-       doms.append( (int(ranges_str[i].split("-")[0]), int(ranges_str[i].split("-")[1])) )
+    doms = [(int(r.split("-")[0]), int(r.split("-")[1])) for r in ranges_str]
 
-    
-    for i in range(len(doms) - 1):
-        if doms[i][0] >= doms[i + 1][0]:
-            print("First numbers are not in order")
-            exit()
+    if not all([x[0] <= x[1] for x in doms]):
+        print("WARNING: Elements in each range should be non-decreasing e.g. dom_res 1-10 11-20 ...")
 
-    # Check if the second numbers are ordered
-    for i in range(len(doms) - 1):
-        if doms[i][1] >= doms[i + 1][1]:
-            print("Second numbers are not in order")
-            exit()
-
-    # Check if numbers within each tuple are ordered
-    for t in doms:
-        if t[0] >= t[1]:
-            print("Numbers within tuple are not in order")
-            exit()
+    if not all([x1[1] < x2[0] for x1, x2 in zip(doms[:-1], doms[1:])]):
+        print("WARNING: Ranges should not overlap e.g. dom_res 1-10 11-20 ...")
 
     return doms
-
 
 def domain_mask(topology_ref, domain_ranges, dim):
     
@@ -139,7 +117,7 @@ def domain_mask(topology_ref, domain_ranges, dim):
     domain_mask = np.full((dim, dim), False)
     
     #add partial masks corresponding to the domain ranges
-    map_appo = np.array([ True if x >= find_atom_start(topology_ref, domain_ranges[0]) and x < find_atom_end(topology_ref, domain_ranges[1]) else False for x in range(dim)])
+    map_appo = np.array([ True if x >= find_atom_start(topology_ref, domain_ranges[0]) and x <= find_atom_end(topology_ref, domain_ranges[1]) else False for x in range(dim)])
     map_appo = map_appo * map_appo[:,np.newaxis]
     
     #join the partial mask to the full  lenght matrix
@@ -153,7 +131,7 @@ def domain_mask_inter(topology_ref, domain_ranges, dim, dim_inter):
     domain_mask = np.full((dim, dim_inter), False)
 
     #add partial masks corresponding to the domain ranges
-    map_appo = np.array([ True if x >= find_atom_start(topology_ref, domain_ranges[0]) and x < find_atom_end(topology_ref, domain_ranges[1]) else False for x in range(dim)])
+    map_appo = np.array([ True if x >= find_atom_start(topology_ref, domain_ranges[0]) and x <= find_atom_end(topology_ref, domain_ranges[1]) else False for x in range(dim)])
     map_appo_2 = np.array([ True for x in range(dim_inter)])
     map_appo = np.outer(map_appo, map_appo_2)
 

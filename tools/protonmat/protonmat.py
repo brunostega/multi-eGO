@@ -2,8 +2,8 @@ import numpy as np
 import sys
 import argparse
 import os
-import parmed as pmd
-import warnings
+# import parmed as pmd
+# import warnings
 import pandas as pd
 import itertools
 import gzip
