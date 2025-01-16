@@ -9,7 +9,7 @@ import itertools
 import gzip
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..",))
-from tools.matrix_manipulator import functions 
+from src.multiego.util import mat_modif_functions as functions 
 
 COLUMNS = ["mi", "ai", "mj", "aj", "c12dist", "p", "cutoff"]
 
@@ -65,17 +65,19 @@ if __name__ == '__main__':
 This tools modifies an input matrix to change the protonation state accordingly to the input and output topology
         """)
         
-    parser.add_argument('--input_mat'   , type=str,  required=True , default=None, help='List of paths associated to the intramat for each domain')
-    parser.add_argument('--input_top'   , type=str,  required=True , default=None, help='Path for the matrix to be added on the domain ranges')
-    parser.add_argument('--output_top'  , type=str,  required=True , default=None, help='List of residue ranges of the domains')
-    parser.add_argument('--out_name'    , type=str,  required=False, default=""  , help='Target topology (the topology of the final full lenght structure)')
-    parser.add_argument('--out'         , type=str,  required=False, default="." , help='List of paths of each domain associated to the ranges')
-    parser.add_argument('--H_name'         , type=str,  required=False, default="H" , help='List of paths of each domain associated to the ranges')
+    parser.add_argument('--input_mat'   , type=str,  required=True , default=None, help='Input matrix to be modified')
+    parser.add_argument('--input_top'   , type=str,  required=True , default=None, help='Input topology associated to the matrix')
+    parser.add_argument('--output_top'  , type=str,  required=True , default=None, help='Output topology with the correct protonation state')
+    parser.add_argument('--out_name'    , type=str,  required=False, default=""  , help='Name of the output matrix')
+    parser.add_argument('--out'         , type=str,  required=False, default="." , help='Output directory')
+    parser.add_argument('--H_name'      , type=str,  required=False, default="H" , help='Name of the Backbone N hydrogen atom')
 
     args = parser.parse_args()
 
 top, top_df = functions.read_topologies(args.input_top)
 out_top, out_top_df = functions.read_topologies(args.output_top)
+
+#TODO modify H_name and check if it is in the topology
 
 # Check inputs
 mat, MOL_I, MOL_J = check_inputs(top_df, out_top_df, args)

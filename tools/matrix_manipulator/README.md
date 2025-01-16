@@ -1,7 +1,7 @@
 # COMBINE MULTIPLE SUB-DOMAINS TRAININGS AND A FULL-LENGHT TRAINING INTO A SINGLE ONE
 
 Usage:
-> python make_frankenstein.py --config templates/config.yml (--check_overlap)
+> python combine_trainings.py --config templates/config.yml (--check_overlap)
 
 Where the config file is: 
 

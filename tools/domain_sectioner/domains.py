@@ -7,7 +7,7 @@ import warnings
 import sys
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..",))
-from tools.matrix_manipulator import functions
+from src.multiego.util import mat_modif_functions as functions 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TODO!")

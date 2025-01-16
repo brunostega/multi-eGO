@@ -13,7 +13,7 @@ The script requires the following command-line arguments:
 |----------------|--------|----------|---------------------------------------------------------------------------------------------|
 | `--input_mat`  | string | Yes      | Path to the input matrix file.                                                             |
 | `--input_top`  | string | Yes      | Path to the input topology file.                                                           |
-| `--output_top` | string | Yes      | Path to the output topology file.                                                          |
+| `--output_top` | string | Yes      | Path to the output topology file with correct protonation.                                 |
 | `--out_name`   | string | No       | Name prefix for the output matrix file.                                                    |
 | `--out`        | string | No       | Directory to save the output file. Default is the current directory (`.`).                 |
 

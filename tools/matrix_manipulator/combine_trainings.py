@@ -12,15 +12,15 @@ import h5py
 import yaml
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..",))
-from tools.matrix_manipulator import functions
+from src.multiego.util import mat_modif_functions as functions 
 
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="join domains matrices and a full lenght matrix") 
-    parser.add_argument('--config'   , type=str,  default=None, help='List of paths associated to the intramat for each domain')
+    parser.add_argument('--config'   , type=str,  default=None, help='Config file with inputs')
     parser.add_argument('--check_overlap'     , type=bool, default=True , action=argparse.BooleanOptionalAction, help="If true checks overlap of matrices domains. default true, but memory expensive")
-    parser.add_argument('--check_element'     , type=bool, default=False , action=argparse.BooleanOptionalAction, help="If true checks element differences betweeen domain top and global top. default true")
+    parser.add_argument('--check_element'     , type=bool, default=True , action=argparse.BooleanOptionalAction, help="If true checks element differences betweeen domain top and global top. default true")
     args = parser.parse_args()
 
 if args.config is not None:
