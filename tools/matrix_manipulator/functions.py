@@ -44,7 +44,7 @@ def read_topologies(top):
         if name in exclude: continue
         res.append([r.name for r in topology.molecules.values().mapping[name][0].residues])
         atoms.append([len(r.atoms) for r in topology.molecules.values().mapping[name][0].residues])
-        atoms_name.append(np.array([ a.type for a in topology.molecules.values().mapping[name][0].atoms]))
+        atoms_name.append(np.array([ a.name for a in topology.molecules.values().mapping[name][0].atoms]))
         atoms_type_per_res.append([ [a.type for a in r.atoms] for r in topology.molecules.values().mapping[name][0].residues])
         atoms_name_per_res.append([ [a.type[0] for a in r.atoms] for r in topology.molecules.values().mapping[name][0].residues])
         tot_num_atoms.append(np.sum(np.array([len(r.atoms) for r in topology.molecules.values().mapping[name][0].residues])))
@@ -55,7 +55,6 @@ def read_topologies(top):
     top_df["atoms_name_per_res"] = atoms_name_per_res
     top_df["atoms_type_per_res"] = atoms_type_per_res
 
-    
     return topology,  top_df
 
 
@@ -176,16 +175,12 @@ def check_domain_topologies(domains_tops, top_df, args, ranges):
     count_err_num_at  = 0
     count_err_name_at = 0
     topol_domains = []
-    CHECK_ATOM_NAMES = True #args.check_names#;False #this will mostly always give error because atom names will be different. Use it only to check that atom types are the same
+    CHECK_ATOM_ELEMENT = args.check_element#;False #this will mostly always give error because atom names will be different. Use it only to check that atom types are the same
 
     for i,d in enumerate(domains_tops):
         #target topology stuff to be checked
         res_ref_temp = top_df["residues"][0][int(ranges[i][0]-1):int(ranges[i][1])]
         atoms_ref_temp = top_df["N_atoms_per_res"][0][int(ranges[i][0]-1):int(ranges[i][1])]
-        # print(res_ref_temp)
-        # print(atoms_ref_temp)
-        # print(top_df["atoms_name_per_res"][0][int(ranges[i][0]-1):int(ranges[i][1])])
-        # print(ranges[i][0]-1, ranges[i][1])
         atoms_name_target = np.concatenate(top_df["atoms_name_per_res"][0][int(ranges[i][0]-1):int(ranges[i][1])])
 
         #read domain top 
@@ -194,9 +189,9 @@ def check_domain_topologies(domains_tops, top_df, args, ranges):
         temp_dom_atoms = np.array(top_df_dom["N_atoms_per_res"][0])
         #remove the excess terminal oxigen
         if ranges[i][1] < len(top_df["residues"][0]): temp_dom_atoms[-1]-=1     
-        if True:#not args.skip_H:
-            #remove the terminal excess hydroges to compare full system top and single domain top
-            if ranges[i][0] > 1: temp_dom_atoms[0]-=2
+
+        #remove the terminal excess hydroges to compare full system top and single domain top
+        if ranges[i][0] > 1: temp_dom_atoms[0]-=2
         print(f"-Domain {i+1}: between ranges {ranges[i]} of full structure")
 
         #check residue names
@@ -223,7 +218,7 @@ def check_domain_topologies(domains_tops, top_df, args, ranges):
 
             print(f"At position: {where} \n")
             count_err_num_at+=1
-        if CHECK_ATOM_NAMES:
+        if CHECK_ATOM_ELEMENT:
             #check atom names of residues
             if ranges[i][0] > 1 : top_df_dom["atoms_name_per_res"][0][0] = np.delete(np.array(top_df_dom["atoms_name_per_res"][0][0]), [1,2])
             if ranges[i][1] < len(top_df["residues"][0]) : top_df_dom["atoms_name_per_res"][0][-1] = np.delete(np.array(top_df_dom["atoms_name_per_res"][0][-1]), [-1])

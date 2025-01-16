@@ -1,0 +1,50 @@
+;
+;	File 'topol.top' was generated
+;	By user: camillaardi (1003)
+;	On host: bergamo
+;	At date: Sun Dec  1 19:50:25 2024
+;
+;	This is a standalone topology file
+;
+;	Created by:
+;	                    :-) GROMACS - gmx pdb2gmx, 2024.4 (-:
+;	
+;	Executable:   /mnt/SSD/software/gromacs-2024.4_thread/bin/gmx
+;	Data prefix:  /mnt/SSD/software/gromacs-2024.4_thread
+;	Working dir:  /home/camillaardi/PDZ2/holo/protein_peptide
+;	Command line:
+;	  gmx pdb2gmx -f renum.pdb -o 1VJ6_proc.gro
+;	Force field was read from current directory or a relative path - path added.
+;
+
+; Include forcefield parameters
+#include "./des-amber.ff/forcefield.itp"
+
+; Include chain topologies
+#include "topol_Protein_chain_A.itp"
+;#include "topol_Protein_chain_B.itp"
+
+; Include water topology
+#include "./des-amber.ff/tip4pd.itp"
+
+#ifdef POSRES_WATER
+; Position restraint for each water oxygen
+[ position_restraints ]
+;  i funct       fcx        fcy        fcz
+   1    1       1000       1000       1000
+#endif
+
+; Include topology for ions
+#include "./des-amber.ff/ions.itp"
+
+[ system ]
+; Name
+Georgetown Riga Oslo Madrid Amsterdam Chisinau Stockholm in water
+
+[ molecules ]
+; Compound        #mols
+Protein_chain_A     1
+;Protein_chain_B     1
+;SOL         11810
+;NA               187
+;CL               189
