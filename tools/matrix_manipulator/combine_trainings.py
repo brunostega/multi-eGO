@@ -336,8 +336,8 @@ start_time = time.time()
 if index_mi == index_mj and index_mi == 1:
 
     with h5py.File("frankestein_intra_1_1.ndx.h5", "w") as hf:
-        hf.create_dataset("frankestein_intra_1_1.ndx", data=final_intramat.T)
-    # np.savetxt(f'frankestein_intra_1_1.ndx',final_intramat.T, delimiter=" ", fmt = ['%i', '%i', '%i', '%i', '%2.6f', '%.6e', '%2.6f', '%1i'])
+        hf.create_dataset("frankestein_intra_1_1.ndx", data=final_intramat.T, compression='gzip', compression_opts=9)
+    # np.savetxt(f'frankestein_intra_1_1.ndx',final_intramat.T, delimiter=" ", fmt = ['%i', '%i', '%i', '%i', '%2.6f', '%.6e', '%2.6f'])
     print(f"    Ouput was saved in frankestein_intra_1_1.ndx in {time.time()-start_time:.2f} s")
 
 else:

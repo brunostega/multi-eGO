@@ -3,8 +3,36 @@ import parmed as pmd
 import warnings
 import pandas as pd
 import gzip
+import tracemalloc
+import time
 
 exclude = ["SOL", "CL","NA"]
+
+def monitor_performance(check_time=True, check_memory=True):
+    def inner(func):
+        def wrapper(*args, **kwargs):
+            if check_time: start_time = time.time()
+            if check_memory: tracemalloc.start()
+
+            result = func(*args, **kwargs)
+            
+            if check_time is True and check_memory is True:
+                end_time = time.time()
+                current, peak = tracemalloc.get_traced_memory()
+                tracemalloc.stop()
+                print(f">>> Monitor: Time taken = {end_time - start_time:.2f} seconds. Peak memory usage: {peak / 10**6:.2f} MB")
+            if check_time is True and check_memory is False:
+                end_time = time.time()
+                print(f">>> Monitor: Time taken = {end_time - start_time:.2f} seconds")
+            if check_time is False and check_memory is True:
+                current, peak = tracemalloc.get_traced_memory()
+                tracemalloc.stop()
+                print(f">>> Monitor: Peak memory usage: {peak / 10**6:.2f} MB")
+
+            return result
+        return wrapper  
+    return inner 
+
 
 def read_topologies(top):
     '''
