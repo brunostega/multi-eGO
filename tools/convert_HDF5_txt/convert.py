@@ -1,10 +1,6 @@
 import argparse
 import numpy as np
 import h5py
-import time
-from memory_profiler import profile
-from memory_profiler import memory_usage
-import tracemalloc
 import sys 
 import os 
 

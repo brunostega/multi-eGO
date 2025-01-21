@@ -3,6 +3,7 @@ import sys
 import argparse
 import os
 import parmed as pmd
+import h5py
 
 # import warnings
 import pandas as pd
@@ -17,6 +18,7 @@ sys.path.append(
     )
 )
 from src.multiego.util import mat_modif_functions as functions
+from src.multiego.util.mat_modif_functions import monitor_performance
 
 COLUMNS = ["mi", "ai", "mj", "aj", "c12dist", "p", "cutoff"]
 
@@ -62,24 +64,38 @@ def check_inputs(top_df_input, top_df_output, args):
 
     return mat, MOL_I, MOL_J
 
+@monitor_performance()
+def write_mat(mat_out, output_file, h5=True):
 
-def write_mat(mat_out, output_file):
     # format
-    mat_out["mi"] = mat_out["mi"].map("{:}".format)
-    mat_out["mj"] = mat_out["mj"].map("{:}".format)
-    mat_out["ai"] = mat_out["ai"].map("{:}".format)
-    mat_out["aj"] = mat_out["aj"].map("{:}".format)
-    mat_out["c12dist"] = mat_out["c12dist"].map("{:,.6f}".format)
-    mat_out["p"] = mat_out["p"].map("{:,.6e}".format)
-    mat_out["cutoff"] = mat_out["cutoff"].map("{:,.6f}".format)
+    # mat_out = mat_out.astype({"mi": int, "ai": int, "mj": int, "aj": int})
+    # mat_out = mat_out.astype({"c12dist": float, "p": float, "cutoff": float})
+    # print(mat_out[COLUMNS].to_numpy())
+    # Save the data into an HDF5 file
 
-    out_content = mat_out.to_string(index=False, header=False, columns=COLUMNS)
-    out_content = out_content.replace("\n", "<")
-    out_content = " ".join(out_content.split())
-    out_content = out_content.replace("<", "\n")
-    out_content += "\n"
-    with gzip.open(output_file, "wt") as f:
-        f.write(out_content)
+    if h5:
+        with h5py.File(output_file, 'w') as h5f:
+            h5f.create_dataset('matrix', data=mat_out[COLUMNS].to_numpy(), compression='gzip', compression_opts=9)
+    else:
+
+    # print(f"Data successfully compressed and saved to {output_file}")
+
+        mat_out["mi"] = mat_out["mi"].map("{:}".format)
+        mat_out["mj"] = mat_out["mj"].map("{:}".format)
+        mat_out["ai"] = mat_out["ai"].map("{:}".format)
+        mat_out["aj"] = mat_out["aj"].map("{:}".format)
+        mat_out["c12dist"] = mat_out["c12dist"].map("{:,.6f}".format)
+        mat_out["p"] = mat_out["p"].map("{:,.6e}".format)
+        mat_out["cutoff"] = mat_out["cutoff"].map("{:,.6f}".format)
+        # write in gzip format compression
+        mat_out.to_csv(output_file, sep=" ", index=False, header=False, columns=COLUMNS, compression="gzip")
+    # out_content = mat_out.to_string(index=False, header=False, columns=COLUMNS)
+    # out_content = out_content.replace("\n", "<")
+    # out_content = " ".join(out_content.split())
+    # out_content = out_content.replace("<", "\n")
+    # out_content += "\n"
+    # with gzip.open(output_file, "wt") as f:
+    #     f.write(out_content)
 
 
 if __name__ == "__main__":
@@ -142,4 +158,4 @@ mat_out["cutoff"] = np.zeros(N_atom_out_i * N_atom_out_j)
 mat_out.loc[where_H, "cutoff"] = mat_noH["cutoff"].to_numpy()
 
 # Write output matrix
-write_mat(mat_out, f"{args.out}/{args.out_name}{os.path.basename(args.input_mat)}.gz")
+write_mat(mat_out, f"{args.out}/{args.out_name}{os.path.basename(args.input_mat)}", h5=False)
