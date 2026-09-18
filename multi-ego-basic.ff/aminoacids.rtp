@@ -88,6 +88,7 @@
 ;  ai    aj    ak    al   gromos type
   -CA    -C     N    CA     gd_14
    -C     N    CA     C     gd_44A
+   -C     N    CA     C     gd_44bA
    -C     N    CA     C     gd_43A
     N    CA     C    +N     gd_45A
     N    CA     C    +N     gd_42A
