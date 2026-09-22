@@ -359,9 +359,9 @@ except Exception:
     )
 
 
-EMAX = 0.14 #maximum epsilon value for the colorbar in the interaction matrix plot
-P_TH = 0.40#0.0034#0.46#0.009#0.008#0.12  # if P_TH is None it will be chosen in the InteractionMatrix class to have NL-NL repulsive
-SHOW = False  # if SHOW is True the interaction matrix will be plotted and saved in the current directory
+EMAX = 0.15 #maximum epsilon value for the colorbar in the interaction matrix plot
+P_TH = 0.0045#0.0034#0.46#0.009#0.008#0.12  # if P_TH is None it will be chosen in the InteractionMatrix class to have NL-NL repulsive
+SHOW = True  # if SHOW is True the interaction matrix will be plotted and saved in the current directory
 # PKL = "atdhisto_density.pkl"
 PKL = "atdhisto.pkl"
 matrix = InteractionMatrix(pkl_file=PKL, emax = EMAX, c12_rep_df = _c12_df, pth=P_TH, show=SHOW)

@@ -158,9 +158,8 @@ class InteractionMatrix:
         tot_reps = []
         sum_probs = []
         for key in data.keys():
-            #probs.append(data[key].p_repeats_n2)
-            probs.append(data[key].p_density)
-            # probs.append(data[key].p_mindist_repeats_allpdbs)
+            probs.append(data[key].p_repeats_n2)
+            #probs.append(data[key].p_density)
             dists.append(data[key].exp_aver)
             cutoffs.append(data[key].cutoff)
             bins.append(data[key].xbins)
@@ -181,7 +180,11 @@ class InteractionMatrix:
         # atmat["probability"] = atmat["sum_probs"]/atmat["tot_repeats"]**(0.5*1.8) if np.sum(atmat["sum_probs"]) > 0 else 0
         # fill nan values in probability with 0
         atmat["probability"] = atmat["probability"].fillna(0)
-
+        # for all bkbn atom pairs set multiply the probability by 1.5 to increase the attractive interactions
+        bkbn_pairs = ["O_H", "O_O", "N_N", "C_C", "CAH_CAH", "CAH2_CAH2", "O_N", "O_C", "O_CAH","O_CAH2",  "N_C","N_CAH", "C_CAH", "N_CAH2", "C_CAH2", "CAH_CAH2"]
+        #bkbn_pairs = ["O_H", "O_O", "N_N", "C_C", "CAH_CAH", "O_N", "O_C", "O_CAH", "N_C","N_CAH", "C_CAH" ]
+        for pair in bkbn_pairs:
+            atmat.loc[atmat["atom_pair"]==pair, "probability"] *= 2
         # where O-H set distance to 0.195
         # atmat.loc[atmat["atom_pair"]=="O_H", "exp_aver"] = 0.195
         # atmat.loc[atmat["atom_pair"]=="O_N", "exp_aver"] = 0.29
@@ -261,6 +264,14 @@ class InteractionMatrix:
         # self.atmat.loc[self.atmat["atom_pair"]=="O_H", "energy"] = 0.45
         # self.atmat.loc[self.atmat["atom_pair"]=="O_N", "energy"] = 0.45
         # self.atmat.loc[self.atmat["atom_pair"]=="N_C", "energy"] = 0.45
+        # eps_base = 0.08
+        # bkbn_pairs = ["O_O", "N_N", "C_C", "CAH_CAH", "CAH2_CAH2", "O_N", "O_C", "O_CAH","O_CAH2",  "N_C","N_CAH", "C_CAH", "N_CAH2", "C_CAH2", "CAH_CAH2"]
+        # for pair in bkbn_pairs:
+        #     if self.atmat.loc[self.atmat["atom_pair"]==pair, "energy"].values[0] < 0:
+        #         self.atmat.loc[self.atmat["atom_pair"]==pair, "energy"] = eps_base
+       
+
+
         # self.atmat.loc[self.atmat["atom_pair"]=="O_O", "energy"]   = 0.08
         # self.atmat.loc[self.atmat["atom_pair"]=="N_N", "energy"]   = 0.08
         # self.atmat.loc[self.atmat["atom_pair"]=="C_C", "energy"]   = 0.08
