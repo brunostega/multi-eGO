@@ -61,7 +61,7 @@ class InteractionMatrix:
         bkbnd_atoms = ["C", "O", "N", "CAH", "CAH2", "H"]
         attype_ordering_charged = [ "OM",  "NL", "NZ"]
         attype_ordering_polar = [ "NE", "NR", "NT", "OA", "CZ", "S", "SM", "SH",  "CH2r", "CH1t"]
-        attype_ordering_apolar = ["CH1","CR", "CH",  "CH2", "CH3"]
+        attype_ordering_apolar = ["CH1","CR", "CH",  "CH2", "CH3", "CS"]
 
 
 
@@ -158,8 +158,8 @@ class InteractionMatrix:
         tot_reps = []
         sum_probs = []
         for key in data.keys():
-            probs.append(data[key].p_repeats_n2)
-            #probs.append(data[key].p_density)
+            #probs.append(data[key].p_repeats_n2)
+            probs.append(data[key].p_density)
             dists.append(data[key].exp_aver)
             cutoffs.append(data[key].cutoff)
             bins.append(data[key].xbins)
@@ -184,7 +184,7 @@ class InteractionMatrix:
         bkbn_pairs = ["O_H", "O_O", "N_N", "C_C", "CAH_CAH", "CAH2_CAH2", "O_N", "O_C", "O_CAH","O_CAH2",  "N_C","N_CAH", "C_CAH", "N_CAH2", "C_CAH2", "CAH_CAH2"]
         #bkbn_pairs = ["O_H", "O_O", "N_N", "C_C", "CAH_CAH", "O_N", "O_C", "O_CAH", "N_C","N_CAH", "C_CAH" ]
         for pair in bkbn_pairs:
-            atmat.loc[atmat["atom_pair"]==pair, "probability"] *= 2
+            atmat.loc[atmat["atom_pair"]==pair, "probability"] *= 1.7
         # where O-H set distance to 0.195
         # atmat.loc[atmat["atom_pair"]=="O_H", "exp_aver"] = 0.195
         # atmat.loc[atmat["atom_pair"]=="O_N", "exp_aver"] = 0.29
