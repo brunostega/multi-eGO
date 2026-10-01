@@ -435,12 +435,12 @@ NTHBOND_C12_OVERRIDES = [
     ({str(row["atp1"]).strip()}, {str(row["atp2"]).strip()}, float(row["c12"])) for _, row in _c12_df.iterrows()
 ]
 
-NTHBOND_C12_OVERRIDES_4_5 = NTHBOND_C12_OVERRIDES.copy()  # Use the same overrides for 4-5 pairs for now
+# NTHBOND_C12_OVERRIDES_4_5 = NTHBOND_C12_OVERRIDES.copy()  # Use the same overrides for 4-5 pairs for now
 # Later should become this and use the 4-5 c12 when is much smaller than the >6 bond c12
-# NTHBOND_C12_OVERRIDES_1_5 = [
-#     ({str(row["atp1"]).strip()}, {str(row["atp2"]).strip()}, float(row["c12.2"])) if float(row["c12.2"])*5 < float(row["c12.1"]) else 
-#      ({str(row["atp1"]).strip()}, {str(row["atp2"]).strip()}, float(row["c12.1"])) for _, row in _c12_df.iterrows()
-# ]
+NTHBOND_C12_OVERRIDES_4_5 = [
+    ({str(row["atp1"]).strip()}, {str(row["atp2"]).strip()}, float(row["c12_45"])) if  (float(row["c12_45"])/float(row["c12"]) > 5  or float(row["c12_45"])/float(row["c12"]) < 1/5) else 
+     ({str(row["atp1"]).strip()}, {str(row["atp2"]).strip()}, float(row["c12"])) for _, row in _c12_df.iterrows()
+]
 
 # NTHBOND_C12_OVERRIDES = [
 #     ({"O", "OM"}, {"O", "OM"}, mg_OO_c12_rep),
