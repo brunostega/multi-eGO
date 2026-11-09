@@ -332,7 +332,11 @@ def write_nonbonded(topology_dataframe, meGO_LJ, parameters, output_folder):
 
 def write_model(meGO_ensemble, meGO_LJ, meGO_LJ_14, parameters, stat_str):
     """
-    Takes care of the final print-out and the file writing of topology and ffnonbonded
+    Takes care of the final print-out and the file writing of the force field.
+
+    Depending on ``parameters.backend`` the force field is written as an
+    OpenMM parameter file (``mego_params.h5``, see ``multiego.omm.paramfile``),
+    as GROMACS files (``topol_mego.top`` + ``ffnonbonded.itp``), or both.
 
     Parameters
     ----------
@@ -349,16 +353,30 @@ def write_model(meGO_ensemble, meGO_LJ, meGO_LJ_14, parameters, stat_str):
         get_outdir_name(f"{parameters.outputs_dir}/{parameters.system}", parameters.explicit_name, parameters.egos)
     )
     create_output_directories(parameters, output_dir)
-    write_topology(
-        meGO_ensemble.topology_dataframe,
-        meGO_ensemble.molecule_type_dict,
-        meGO_ensemble.meGO_bonded_interactions,
-        meGO_LJ_14,
-        parameters,
-        output_dir,
-    )
     meGO_LJ = sort_LJ(meGO_ensemble, meGO_LJ)
-    write_nonbonded(meGO_ensemble.topology_dataframe, meGO_LJ, parameters, output_dir)
+    backend = getattr(parameters, "backend", "both")
+
+    # OpenMM parameter file.  Written first: the GROMACS writers below modify
+    # the DataFrames they receive (they insert a ";" comment column).
+    if backend in ("openmm", "both"):
+        from multiego.omm import paramfile
+
+        params = paramfile.from_generation(
+            meGO_ensemble, meGO_LJ, meGO_LJ_14, parameters, attrs={"mego_version": _mego_version()}
+        )
+        paramfile.write(f"{output_dir}/{paramfile.DEFAULT_FILENAME}", params)
+
+    # GROMACS topology + nonbonded parameters.
+    if backend in ("gromacs", "both"):
+        write_topology(
+            meGO_ensemble.topology_dataframe,
+            meGO_ensemble.molecule_type_dict,
+            meGO_ensemble.meGO_bonded_interactions,
+            meGO_LJ_14,
+            parameters,
+            output_dir,
+        )
+        write_nonbonded(meGO_ensemble.topology_dataframe, meGO_LJ, parameters, output_dir)
     save_matrix_png(output_dir)
     write_output_readme(meGO_LJ, parameters, output_dir, stat_str)
     return output_dir

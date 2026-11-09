@@ -55,6 +55,14 @@ _args_dict_shared = {
         "type": str,
         "help": "Configuration file for the system",
     },
+    "--backend": {
+        "default": "both",
+        "type": str,
+        "choices": ["openmm", "gromacs", "both"],
+        "help": "Output format of the force field. openmm: mego_params.h5 (OpenMM parameter file); "
+        "gromacs: ffnonbonded.itp + topol_mego.top; both (default): both formats. "
+        "The GROMACS files are still needed by cmdata/make_mat and as reference topology in production runs.",
+    },
     "--outputs_dir": {
         "default": None,
         "type": str,

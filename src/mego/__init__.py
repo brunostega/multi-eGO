@@ -28,3 +28,15 @@ def main():
     from multiego._run import main as _main  # noqa: E402
 
     _main(root_dir=os.getcwd())
+
+
+def simulate():
+    """Entry point for the ``mego-simulate`` console command (OpenMM runs)."""
+    _src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _root = os.path.dirname(_src)
+    # Same sys.path fix as main(): src/multiego must win over the root multiego.py.
+    sys.path = [_src] + [p for p in sys.path if os.path.realpath(p) != os.path.realpath(_root)]
+
+    from multiego.omm.simulate import main as _main  # noqa: E402
+
+    _main()

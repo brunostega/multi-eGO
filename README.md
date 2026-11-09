@@ -36,14 +36,15 @@ Multi-*e*GO constructs an atomistic Lennard-Jones force field in two stages:
 1. **Molten-globule (`mg`) prior** — a baseline transferable force field derived from a combination of physico-chemical and statistical properties of proteins.
 2. **Production force field** — the prior is refined following Bayes, learning contact probabilities from one or more training dataset (obtained from structures, MD simulations, conformational ensemble resulting from integrative/AI approches).
 
-The result is a force field encoded in standard GROMACS `ffnonbonded.itp` and `topol_mego.top` files, compatible with any GROMACS workflow.
+The result is a force field that can be simulated with [OpenMM](https://openmm.org) (parameter file `mego_params.h5`) and/or [GROMACS](https://www.gromacs.org) (standard `ffnonbonded.itp` and `topol_mego.top` files). The two backends describe exactly the same model; this is checked by the regression test `tests/test_openmm_parity.py`.
 
 ---
 
 ## Requirements
 
 - Python ≥ 3.10
-- [GROMACS](https://www.gromacs.org) > 2022 (required for running simulations)
+- [OpenMM](https://openmm.org) ≥ 8.1 (installed with the Python environment below) to run simulations with the OpenMM backend
+- [GROMACS](https://www.gromacs.org) > 2022 for the GROMACS backend, `pdb2gmx` (topology preparation) and `cmdata`
 - The `cmdata` tool for extracting contact histograms from trajectories — this requires recompiling GROMACS from source; see [its README](tools/cmdata/README.md) for instructions
 
 ---
@@ -171,9 +172,34 @@ python multiego.py --system SYSTEM_NAME --egos mg
 
 Output files are written to `outputs/SYSTEM_NAME/mg_#/` and contain:
 
-- `ffnonbonded.itp` — copy into your simulation directory
-- `topol_mego.top` — copy into your simulation directory
-- `meGO.log` — a log including the detail of the generated force field 
+- `mego_params.h5` — the OpenMM parameter file (format described in `src/multiego/omm/paramfile.py`)
+- `ffnonbonded.itp` and `topol_mego.top` — the GROMACS force field
+- `meGO.log` — a log including the detail of the generated force field
+
+The `--backend` option selects what is written: `openmm`, `gromacs` or `both` (default). The GROMACS files are
+still required by `cmdata`/`make_mat` and as the reference topology of production runs (step 5), so keep `both`
+unless you only want to simulate.
+
+#### Running with OpenMM
+
+`mego_simulate.py` (or `mego-simulate` after `pip install -e .`) replaces the `mdp` files and `gmx mdrun`; its
+defaults reproduce `mdps/ff_aa.mdp` (5 fs time step, Langevin thermostat with τ = 25 ps, 2.5 nm cut-off with
+potential shift, no dispersion correction):
+
+```bash
+# minimisation + restrained equilibration (ff_em/ff_cg + ff_aa-posre)
+python mego_simulate.py --params outputs/SYSTEM_NAME/mg_1/mego_params.h5 --conf conf.gro \
+    --temperature 300 --minimize --posre 1000 --nsteps 100000 --output equil
+# reference run (ff_aa)
+python mego_simulate.py --params outputs/SYSTEM_NAME/mg_1/mego_params.h5 --conf equil_final.gro \
+    --temperature 300 --nsteps 10000000 --output reference
+```
+
+Several copies of a molecule are simulated with `--molecules NAME:COUNT,...` (the GROMACS `[ molecules ]`
+section). The trajectory is written as `.xtc`, so it can be analysed with `cmdata` (step 4) using a `.tpr`
+generated from the GROMACS files. A run is continued with `--restart reference.chk`.
+
+#### Running with GROMACS
 
 Run the reference simulation using the provided `mdp` files in order:
 

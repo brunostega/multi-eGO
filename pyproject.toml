@@ -26,6 +26,7 @@ dev = ["pytest", "flake8", "flake8-pyproject", "black"]
 
 [project.scripts]
 mego = "mego:main"
+mego-simulate = "mego:simulate"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

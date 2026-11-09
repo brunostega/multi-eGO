@@ -18,9 +18,9 @@ The two Systems are compared at two complementary levels:
   catches a wrong value even in a single one of ~120,000 LJ pairs;
 * physics (``multiego.omm.energy``): on several configurations of GB1 the
   energy and per-atom forces of every term must agree.  This catches what
-  parameters cannot: wrong functional forms, cut-off, potential shift, PBC.  As the port to OpenMM proceeds, only
-``build_candidate_system`` changes (GROMACS files -> native OpenMM builder);
-the reference and the checks stay the same.
+  parameters cannot: wrong functional forms, cut-off, potential shift, PBC.  The candidate is built with the native OpenMM
+backend (``mego_params.h5`` + ``multiego.omm.builder``), so this test checks
+that the OpenMM backend reproduces the GROMACS model.
 
 A second, independent safeguard pins the reference energies themselves
 (``openmm_reference_energies.json``), so that a change in the reference
@@ -43,7 +43,9 @@ TEST_ROOT = os.path.dirname(os.path.abspath(__file__))
 MEGO_ROOT = os.path.abspath(os.path.join(TEST_ROOT, os.pardir))
 sys.path.insert(0, os.path.join(MEGO_ROOT, "src"))
 
-from multiego.omm import energy, parameters  # noqa: E402
+import openmm.app as app  # noqa: E402
+
+from multiego.omm import builder, energy, paramfile, parameters  # noqa: E402
 from multiego.omm.gromacs_reference import load_gromacs_system  # noqa: E402
 
 SYSTEM = "gpref"
@@ -53,7 +55,18 @@ PINNED_ENERGIES = os.path.join(REFERENCE_DIR, "openmm_reference_energies.json")
 
 # Name used for the freshly generated output (outputs/gpref/parity_1).
 CANDIDATE_NAME = "parity"
-MG_COMMAND = ["--system", SYSTEM, "--egos", "mg", "--no_header", "--explicit_name", CANDIDATE_NAME]
+# --backend openmm: only the parameter file is needed (and it is faster).
+MG_COMMAND = [
+    "--system",
+    SYSTEM,
+    "--egos",
+    "mg",
+    "--no_header",
+    "--explicit_name",
+    CANDIDATE_NAME,
+    "--backend",
+    "openmm",
+]
 
 # Random displacement (nm) used to create extra test configurations.  The
 # .gro file alone probes a single set of distances; displaced copies probe
@@ -79,14 +92,15 @@ def generate_candidate():
 
 def build_candidate_system(output_dir):
     """
-    Turn the freshly generated output into an OpenMM System.
+    Turn the freshly generated output into an OpenMM System with the native
+    builder: parameter file (mego_params.h5) -> multiego.omm.builder.
 
-    This is the only function that changes during the port: for now the
-    current code still writes GROMACS files, which are loaded the same way as
-    the reference.
+    The GROMACS files are not used, so the comparison with the (GROMACS)
+    reference is a genuine cross-check of the two backends.
     """
-    system, _ = load_gromacs_system(os.path.join(output_dir, "topol_mego.top"), GRO_FILE)
-    return system
+    params = paramfile.read(os.path.join(output_dir, paramfile.DEFAULT_FILENAME))
+    box = app.GromacsGroFile(GRO_FILE).getPeriodicBoxVectors()
+    return builder.create_system(params, box_vectors=box)
 
 
 def configurations(positions):
@@ -117,11 +131,9 @@ def reference_parameters(reference):
 def candidate(reference):
     _, confs, _ = reference
     output_dir = generate_candidate()
-    try:
-        system = build_candidate_system(output_dir)
-        return system, [energy.decompose(system, x) for x in confs]
-    finally:
-        shutil.rmtree(output_dir, ignore_errors=True)
+    system = build_candidate_system(output_dir)
+    yield system, [energy.decompose(system, x) for x in confs]
+    shutil.rmtree(output_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +177,41 @@ def test_candidate_matches_reference(reference, candidate):
     for i, (ref, cand) in enumerate(zip(ref_decompositions, cand_decompositions)):
         failures = energy.compare(ref, cand)
         assert not failures, f"configuration {i}:\n" + "\n".join(failures) + "\n" + energy.format_table(ref, cand)
+
+
+def test_multiple_copies(tmp_path, candidate):
+    """
+    Two copies of GB1: checks atom offsets and per-copy exclusions of the
+    builder against GROMACS ``[ molecules ] GB1 2`` read by GromacsTopFile.
+    """
+    # Reference: same files, with two copies in [ molecules ].
+    shutil.copy(os.path.join(REFERENCE_DIR, "ffnonbonded.itp"), tmp_path)
+    with open(os.path.join(REFERENCE_DIR, "topol_mego.top")) as f:
+        top = f.read().rstrip()
+    assert top.endswith("1"), "unexpected [ molecules ] section"
+    with open(tmp_path / "topol_mego.top", "w") as f:
+        f.write(top[:-1] + "2\n")
+    # Coordinates: the second copy translated by 10 nm along x (box 23.4 nm).
+    with open(GRO_FILE) as f:
+        lines = f.read().splitlines()
+    n = int(lines[1])
+    end = 2 + n
+    atoms = lines[2:end]
+    shifted = [a[:20] + f"{float(a[20:28]) + 10.0:8.3f}" + a[28:] for a in atoms]
+    with open(tmp_path / "two.gro", "w") as f:
+        f.write("\n".join([lines[0], str(2 * n)] + atoms + shifted + [lines[2 + n]]) + "\n")
+
+    ref_system, positions = load_gromacs_system(str(tmp_path / "topol_mego.top"), str(tmp_path / "two.gro"))
+    params = paramfile.read(
+        os.path.join(MEGO_ROOT, "outputs", SYSTEM, f"{CANDIDATE_NAME}_1", paramfile.DEFAULT_FILENAME)
+    )
+    cand_system = builder.create_system(
+        params, molecules=[("GB1", 2)], box_vectors=ref_system.getDefaultPeriodicBoxVectors()
+    )
+    assert cand_system.getNumParticles() == 2 * n
+    failures = parameters.compare(parameters.extract(ref_system), parameters.extract(cand_system))
+    failures += energy.compare(energy.decompose(ref_system, positions), energy.decompose(cand_system, positions))
+    assert not failures, "\n".join(failures)
 
 
 # ---------------------------------------------------------------------------

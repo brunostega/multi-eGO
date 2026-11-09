@@ -55,8 +55,9 @@ FORCE_NAME_TO_TERM = {
     **{term: term for term in TERMS},
 }
 
-# Forces that do not contribute to the potential energy and are ignored.
-IGNORED_FORCE_NAMES = {"CMMotionRemover"}
+# Forces that are not part of the force field (no energy, or simulation-only
+# restraints) and are ignored by the comparisons.
+IGNORED_FORCE_NAMES = {"CMMotionRemover", "position_restraints"}
 
 
 def classify_force(force):
