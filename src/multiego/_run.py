@@ -16,6 +16,7 @@ from multiego import generate_face
 from multiego import fileio as io
 from multiego import lj
 from multiego import mg
+from multiego import nonbonded
 from multiego import pairs
 from multiego import _term
 from multiego.ensemble_data import MeGOEnsemble
@@ -132,7 +133,8 @@ def _main(root_dir, bt):
         st = et
 
         _term.header("Generating LJ dataset")
-        meGO_LJ, meGO_LJ_14, stat_str = lj.generate_LJ(meGO_ensembles, train_dataset, args)
+        prior = mg.generate_MG_prior(meGO_ensembles)
+        meGO_LJ, meGO_LJ_14, stat_str = lj.generate_LJ(meGO_ensembles, train_dataset, args, prior)
         del train_dataset
         gc.collect()
         et = time.time()
@@ -142,8 +144,11 @@ def _main(root_dir, bt):
     elif args.egos == "mg":
         _term.header("Generating LJ dataset")
         with _term.spinner("building MG LJ"):
-            meGO_LJ = mg.generate_MG_LJ(meGO_ensembles)
-        stat_str = io.print_stats(meGO_LJ)
+            # The prior is kept as a matrix over chemical types; there are no
+            # learned interactions (overrides) in a molten-globule model.
+            prior = mg.generate_MG_prior(meGO_ensembles)
+            meGO_LJ = None
+        stat_str = io.print_stats(mg.prior_stats_frame(meGO_ensembles, prior))
         et = time.time()
         _term.section_timing(et - st)
         st = et
@@ -155,9 +160,15 @@ def _main(root_dir, bt):
     _term.section_timing(et - st)
     st = et
 
+    # Per-atom combination-rule parameters (the GROMACS [ atomtypes ]): the mg
+    # prior uses mg_c6/mg_c12, production the c6/c12 set by the contacts step.
+    topology = meGO_ensembles.topology_dataframe
+    c6_col, c12_col = ("mg_c6", "mg_c12") if args.egos == "mg" else ("c6", "c12")
+    nonbonded_model = nonbonded.NonbondedModel(meGO_ensembles, prior, topology[c6_col], topology[c12_col], meGO_LJ)
+
     _term.header("Writing Multi-eGO model")
     with _term.spinner("writing files"):
-        output_dir = io.write_model(meGO_ensembles, meGO_LJ, meGO_LJ_14, args, stat_str)
+        output_dir = io.write_model(meGO_ensembles, nonbonded_model, meGO_LJ_14, args, stat_str)
     _term.success(f"  Output written to {output_dir}")
     et = time.time()
     _term.section_timing(et - st)

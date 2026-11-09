@@ -10,7 +10,7 @@ is therefore the same as with GROMACS.
 
 All values are stored in OpenMM units: nm, rad, kJ/mol, amu.
 
-Layout (format version 1)
+Layout (format version 2)
 -------------------------
 ::
 
@@ -36,10 +36,15 @@ Layout (format version 1)
     /nonbonded/
         sb_types              str   all sb_types of all molecule types; the
                                     position in this list is the table index
+        chem_type             int   chemical type of each sb_type (index into
+                                    prior/types)
         default_c6            float per-type c6  (combination rule, see below)
         default_c12           float per-type c12
-        pair_types            int   (M, 2) explicit type pairs (i <= j)
-        pair_c6, pair_c12     float (M,) parameters of the explicit pairs
+        prior/types           str   chemical atom types
+        prior/has_rule        bool  (T, T) whether the mg prior defines the pair
+        prior/c6, prior/c12   float (T, T) mg prior parameters
+        overrides/i, j        int   (M,) atom-pair overrides (learned contacts)
+        overrides/c6, c12     float (M,)
 
 Within a molecule, atom indices (ai, aj, ...) are 0-based positions in the
 ``atoms`` table of that molecule.
@@ -50,11 +55,14 @@ These follow the GROMACS ``[ defaults ]`` written by multi-eGO
 (``nbfunc 1, comb-rule 1, gen-pairs no``), so the two backends are
 equivalent:
 
-* the LJ parameters of a pair of types (i, j) are given by the explicit list
-  ``pair_types / pair_c6 / pair_c12`` (the GROMACS ``[ nonbond_params ]``);
-* every type pair *not* in the list uses the combination rule 1:
+* a pair of sb_types (i, j) takes, in order of precedence, the parameters of
+  an override, or of the mg prior of their chemical types if
+  ``prior/has_rule`` is set, or else the combination rule 1:
   ``c6 = sqrt(c6_i c6_j)``, ``c12 = sqrt(c12_i c12_j)`` with the per-type
-  ``default_c6/default_c12`` (the GROMACS ``[ atomtypes ]``);
+  ``default_c6/default_c12`` (the GROMACS ``[ atomtypes ]``).  The first two
+  cases are the pairs listed in the GROMACS ``[ nonbond_params ]``; the
+  representation is compact (see ``multiego.nonbonded``): the prior is stored
+  once per pair of *chemical* types and only the learned pairs per atom pair;
 * atoms within ``nrexcl`` bonds of each other, the explicit ``exclusions``
   and the ``pairs`` of each molecule are excluded from the nonbonded term.
 """
@@ -66,7 +74,9 @@ from dataclasses import dataclass, field
 import h5py
 import numpy as np
 
-FORMAT_VERSION = 1
+from multiego.nonbonded import TypePrior, dense_tables
+
+FORMAT_VERSION = 2
 DEFAULT_FILENAME = "mego_params.h5"
 
 # Columns of each bonded table: (name, dtype).  Atom indices come first.
@@ -114,11 +124,11 @@ class NonbondedParameters:
     """Type-based LJ parameters (see 'Nonbonded semantics' in the module docstring)."""
 
     sb_types: np.ndarray
+    chem_type: np.ndarray
     default_c6: np.ndarray
     default_c12: np.ndarray
-    pair_types: np.ndarray  # (M, 2) int
-    pair_c6: np.ndarray
-    pair_c12: np.ndarray
+    prior: TypePrior
+    overrides: dict  # i, j, c6, c12 arrays
 
     @property
     def n_types(self):
@@ -128,16 +138,11 @@ class NonbondedParameters:
         """
         Return the full (n_types x n_types) c6 and c12 tables.
 
-        Unlisted pairs follow combination rule 1, listed pairs overwrite them
-        (symmetrically).  This is the only place where an N x N object is
-        created: it is what the simulation engine needs.
+        This is the only place where an N x N object is created: it is what
+        the simulation engine needs.  The expansion is shared with the
+        generation code (``multiego.nonbonded.dense_tables``).
         """
-        c6 = np.sqrt(np.outer(self.default_c6, self.default_c6))
-        c12 = np.sqrt(np.outer(self.default_c12, self.default_c12))
-        i, j = self.pair_types[:, 0], self.pair_types[:, 1]
-        c6[i, j] = c6[j, i] = self.pair_c6
-        c12[i, j] = c12[j, i] = self.pair_c12
-        return c6, c12
+        return dense_tables(self.chem_type, self.default_c6, self.default_c12, self.prior, self.overrides)
 
 
 @dataclass
@@ -236,7 +241,7 @@ def _bonded_tables(bonded_interactions, pairs_14):
     return tables
 
 
-def from_generation(meGO_ensemble, meGO_LJ, meGO_LJ_14, parameters, attrs=None):
+def from_generation(meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, attrs=None):
     """
     Build :class:`MegoParameters` from the data structures of the generation
     pipeline, i.e. from exactly what the GROMACS writer receives.
@@ -244,22 +249,20 @@ def from_generation(meGO_ensemble, meGO_LJ, meGO_LJ_14, parameters, attrs=None):
     Parameters
     ----------
     meGO_ensemble : MeGOEnsemble
-    meGO_LJ : pd.DataFrame
-        Nonbonded LJ pairs after ``fileio.sort_LJ`` (columns ai, aj = sb_types,
-        c6, c12): the GROMACS ``[ nonbond_params ]``.
+    nonbonded_model : multiego.nonbonded.NonbondedModel
+        Nonbonded parameters: per-atom defaults, mg prior, learned overrides.
     meGO_LJ_14 : dict of pd.DataFrame
         Pairs per molecule: the GROMACS ``[ pairs ]``.
     parameters : argparse.Namespace
-        CLI arguments; ``egos`` selects the per-type default c6/c12 (the mg
-        prior uses ``mg_c6/mg_c12``, as in ``fileio.write_nonbonded``).
+        CLI arguments (stored as provenance).
     attrs : dict, optional
         Extra file attributes (provenance).
     """
     topology = meGO_ensemble.topology_dataframe
-    c6_col, c12_col = ("mg_c6", "mg_c12") if parameters.egos == "mg" else ("c6", "c12")
 
-    # Global type table: one type per sb_type, in topology order.
-    sb_types = topology["sb_type"].astype(str).to_numpy()
+    # Global type table: one type per sb_type, in topology order (the same
+    # order as nonbonded_model.sb_type).
+    sb_types = nonbonded_model.sb_type
     type_index = {t: i for i, t in enumerate(sb_types)}
 
     molecules = {}
@@ -272,21 +275,14 @@ def from_generation(meGO_ensemble, meGO_LJ, meGO_LJ_14, parameters, attrs=None):
         atoms["nb_type"] = np.array([type_index[t] for t in atoms["sb_type"]], dtype=int)
         molecules[molecule] = MoleculeParameters(molecule, atoms, _bonded_tables(bonded, meGO_LJ_14.get(molecule)))
 
-    pair_types = np.column_stack(
-        [meGO_LJ["ai"].astype(str).map(type_index).to_numpy(), meGO_LJ["aj"].astype(str).map(type_index).to_numpy()]
-    ).astype(int)
-    pair_types.sort(axis=1)  # i <= j
-    # A type pair listed twice would be ambiguous (GROMACS silently keeps the
-    # last one): refuse it instead.
-    if len(np.unique(pair_types, axis=0)) != len(pair_types):
-        raise ValueError("duplicate type pairs in the nonbonded parameters")
+    ov = nonbonded_model.overrides
     nonbonded = NonbondedParameters(
         sb_types=sb_types,
-        default_c6=topology[c6_col].astype(float).to_numpy(),
-        default_c12=topology[c12_col].astype(float).to_numpy(),
-        pair_types=pair_types,
-        pair_c6=meGO_LJ["c6"].astype(float).to_numpy(),
-        pair_c12=meGO_LJ["c12"].astype(float).to_numpy(),
+        chem_type=nonbonded_model.chem,
+        default_c6=nonbonded_model.default_c6,
+        default_c12=nonbonded_model.default_c12,
+        prior=nonbonded_model.prior,
+        overrides={k: ov[k].to_numpy() for k in ("i", "j", "c6", "c12")},
     )
 
     file_attrs = {
@@ -342,15 +338,16 @@ def write(path, params):
             "nonbonded",
             {
                 "sb_types": nb.sb_types,
+                "chem_type": nb.chem_type,
                 "default_c6": nb.default_c6,
                 "default_c12": nb.default_c12,
-                "pair_c6": nb.pair_c6,
-                "pair_c12": nb.pair_c12,
             },
         )
-        f["nonbonded"].create_dataset(
-            "pair_types", data=nb.pair_types, compression="gzip" if nb.pair_types.size else None
-        )
+        p = nb.prior
+        _write_table(f["nonbonded"], "prior", {"types": p.types})
+        for name in ("has_rule", "c6", "c12", "epsilon", "sigma"):
+            f["nonbonded/prior"].create_dataset(name, data=getattr(p, name))
+        _write_table(f["nonbonded"], "overrides", nb.overrides)
 
 
 def read(path):
@@ -366,13 +363,18 @@ def read(path):
         for name, g in groups:
             bonded = {term: _read_table(g[term]) for term in BONDED_COLUMNS}
             molecules[name] = MoleculeParameters(name, _read_table(g["atoms"]), bonded)
-        t = _read_table(f["nonbonded"])
+        g = f["nonbonded"]
+        prior_group = g["prior"]
+        prior = TypePrior(
+            types=prior_group["types"].asstr()[()],
+            **{name: prior_group[name][()] for name in ("has_rule", "c6", "c12", "epsilon", "sigma")},
+        )
         nonbonded = NonbondedParameters(
-            sb_types=t["sb_types"],
-            default_c6=t["default_c6"],
-            default_c12=t["default_c12"],
-            pair_types=t["pair_types"].reshape(-1, 2),
-            pair_c6=t["pair_c6"],
-            pair_c12=t["pair_c12"],
+            sb_types=g["sb_types"].asstr()[()],
+            chem_type=g["chem_type"][()],
+            default_c6=g["default_c6"][()],
+            default_c12=g["default_c12"][()],
+            prior=prior,
+            overrides=_read_table(g["overrides"]),
         )
     return MegoParameters(molecules, nonbonded, attrs)

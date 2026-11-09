@@ -1,5 +1,4 @@
 from . import type_definitions
-from .model_config import config
 
 import numpy as np
 import pandas as pd
@@ -91,72 +90,117 @@ def generate_MG_LJ_pairs_attr(sbtype1, sbtype2, sbtype_mg_c12_dict, sbtype_mg_c6
     return pairs_LJ.reset_index(drop=True)
 
 
-def generate_MG_LJ(meGO_ensemble):
+def _per_type_values(meGO_ensemble, sbtype_dict, label):
     """
-    Generates the molten-globule prior non-bonded interactions.
+    Collapse a per-sb_type dictionary to a per-chemical-type dictionary.
 
-    The MG force field includes special repulsive and attractive interaction pairs
-    (e.g. O-O, H-H, O-H) defined in type_definitions.special_non_local.
+    The mg prior is defined on chemical types; this is only valid if all atoms
+    of a chemical type carry the same value, which is checked here.
+    """
+    values = {}
+    for sbtype, value in sbtype_dict.items():
+        atomtype = meGO_ensemble.sbtype_type_dict[sbtype]
+        if atomtype in values and values[atomtype] != value:
+            raise ValueError(
+                f"{label} differs between atoms of chemical type {atomtype} "
+                f"({values[atomtype]} vs {value}): the mg prior cannot be defined per type"
+            )
+        values[atomtype] = value
+    return values
+
+
+def generate_MG_prior(meGO_ensemble):
+    """
+    Generates the molten-globule prior as a matrix over chemical atom types.
+
+    The prior rules in ``type_definitions.special_non_local`` are defined on
+    chemical atom types, so instead of expanding every rule to all pairs of
+    atoms (an N x N DataFrame, as the former ``generate_MG_LJ`` did) the
+    parameters are stored once per pair of types.  The atom
+    pairs are generated later, only when writing (see
+    ``nonbonded.NonbondedModel``).
+
+    The values are computed by the same functions that built the former
+    per-atom-pair prior (``generate_MG_LJ_pairs_rep/attr``), called with
+    chemical types in place of sb_types, so the numbers are identical.
 
     Parameters
     ----------
-    meGO_ensemble : dict
+    meGO_ensemble : MeGOEnsemble
         The initialized meGO ensemble.
 
     Returns
     -------
-    rc_LJ : pd.DataFrame
-        DataFrame of MG prior LJ interactions.
+    nonbonded.TypePrior
+        Prior over all chemical types present in the topology.  Type pairs
+        without a rule fall back to the combination rule.
     """
-    chunks = []
+    from .nonbonded import TypePrior
+
+    types = np.array(sorted(set(meGO_ensemble.sbtype_type_dict.values())))
+    index = {t: k for k, t in enumerate(types)}
+    n = len(types)
+    prior = TypePrior(
+        types=types,
+        has_rule=np.zeros((n, n), dtype=bool),
+        c6=np.zeros((n, n)),
+        c12=np.zeros((n, n)),
+        epsilon=np.zeros((n, n)),
+        sigma=np.zeros((n, n)),
+    )
+
+    # Per-type versions of the per-sb_type dictionaries used by the rules.
+    c12_by_type = _per_type_values(meGO_ensemble, meGO_ensemble.sbtype_c12_dict, "c12")
+    mg_c12_by_type = _per_type_values(meGO_ensemble, meGO_ensemble.sbtype_mg_c12_dict, "mg_c12")
+    mg_c6_by_type = _per_type_values(meGO_ensemble, meGO_ensemble.sbtype_mg_c6_dict, "mg_c6")
+
     for special in type_definitions.special_non_local:
-        sbtype_a = [
-            sbtype for sbtype, atomtype in meGO_ensemble.sbtype_type_dict.items() if atomtype in special["atomtypes"][0]
-        ]
-        sbtype_b = [
-            sbtype for sbtype, atomtype in meGO_ensemble.sbtype_type_dict.items() if atomtype in special["atomtypes"][1]
-        ]
+        types_a = [t for t in special["atomtypes"][0] if t in index]
+        types_b = [t for t in special["atomtypes"][1] if t in index]
+        if not types_a or not types_b:
+            continue  # rule for types absent from this system
         if special["interaction"] == "rep":
-            temp_LJ = generate_MG_LJ_pairs_rep(
-                sbtype_a,
-                sbtype_b,
-                meGO_ensemble.sbtype_c12_dict,
-                c12_rep=special["epsilon"],
-                factor=special.get("factor", 1.0),
+            rows = generate_MG_LJ_pairs_rep(
+                types_a, types_b, c12_by_type, c12_rep=special["epsilon"], factor=special.get("factor", 1.0)
             )
         elif special["interaction"] == "att":
-            temp_LJ = generate_MG_LJ_pairs_attr(
-                sbtype_a,
-                sbtype_b,
-                meGO_ensemble.sbtype_mg_c12_dict,
-                meGO_ensemble.sbtype_mg_c6_dict,
-                epsilon=special["epsilon"],
-                sigma=special["sigma"],
+            rows = generate_MG_LJ_pairs_attr(
+                types_a, types_b, mg_c12_by_type, mg_c6_by_type, epsilon=special["epsilon"], sigma=special["sigma"]
             )
         else:
             raise ValueError(f"Unknown interaction type {special['interaction']} in special_non_local definition")
 
-        chunks.append(temp_LJ)
+        # rows contains both orientations (a, b) and (b, a): fill symmetrically.
+        a = rows["ai"].map(index).to_numpy()
+        b = rows["aj"].map(index).to_numpy()
+        if prior.has_rule[a, b].any():
+            # Two rules for the same pair would be ambiguous (duplicated atom pairs).
+            raise ValueError(f"two special_non_local rules define the same type pair: {special['atomtypes']}")
+        prior.has_rule[a, b] = True
+        prior.c6[a, b] = rows["c6"].to_numpy()
+        prior.c12[a, b] = rows["c12"].to_numpy()
+        prior.epsilon[a, b] = rows["epsilon"].to_numpy()
+        prior.sigma[a, b] = rows["sigma"].to_numpy()
 
-    rc_LJ = pd.concat(chunks, axis=0, ignore_index=True)
+    # sb_type -> chemical type, used to look up the prior of an atom pair.
+    prior.sb_chem = dict(meGO_ensemble.sbtype_type_dict)
+    return prior
 
-    rc_LJ["type"] = 1
-    rc_LJ["same_chain"] = False
-    rc_LJ["source"] = "mg"
-    rc_LJ["reference"] = "mg"
-    rc_LJ["rep"] = rc_LJ["c12"]
-    rc_LJ["probability"] = 1.0
-    rc_LJ["rc_probability"] = 1.0
-    rc_LJ["rc_threshold"] = 1.0
-    rc_LJ["md_threshold"] = 1.0
-    rc_LJ["learned"] = 0
-    rc_LJ["bond_distance"] = config.max_bond_separation + 1
-    molecule_names_dictionary = {name.split("_", 1)[1]: name for name in meGO_ensemble.molecules_idx_sbtype_dictionary}
-    rc_LJ["molecule_name_ai"] = rc_LJ["ai"].apply(lambda x: "_".join(x.split("_")[1:-1])).map(molecule_names_dictionary)
-    rc_LJ["molecule_name_aj"] = rc_LJ["aj"].apply(lambda x: "_".join(x.split("_")[1:-1])).map(molecule_names_dictionary)
-    rc_LJ["ai"] = rc_LJ["ai"].astype("category")
-    rc_LJ["aj"] = rc_LJ["aj"].astype("category")
-    rc_LJ["molecule_name_ai"] = rc_LJ["molecule_name_ai"].astype("category")
-    rc_LJ["molecule_name_aj"] = rc_LJ["molecule_name_aj"].astype("category")
 
-    return rc_LJ
+def prior_stats_frame(meGO_ensemble, prior):
+    """
+    The prior as one row per ordered pair of chemical types with a rule, with
+    the number of atom pairs it applies to (``count``), for
+    ``fileio.print_stats``.  The counts reproduce the former statistics, which
+    were computed on all ordered pairs of atoms.
+    """
+    n_atoms = pd.Series(list(meGO_ensemble.sbtype_type_dict.values())).value_counts()
+    a, b = np.nonzero(prior.has_rule)
+    return pd.DataFrame(
+        {
+            "epsilon": prior.epsilon[a, b],
+            "sigma": prior.sigma[a, b],
+            "same_chain": False,
+            "count": n_atoms[prior.types[a]].to_numpy() * n_atoms[prior.types[b]].to_numpy(),
+        }
+    )

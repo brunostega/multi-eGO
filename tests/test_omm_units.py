@@ -15,6 +15,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "src"))
 
+from multiego.nonbonded import TypePrior  # noqa: E402
 from multiego.omm import builder, paramfile  # noqa: E402
 from multiego.omm.simulate import parse_molecules  # noqa: E402
 
@@ -57,21 +58,30 @@ def test_lj_expression_two_particles(shift):
     assert energy == pytest.approx(expected, rel=1e-12)
 
 
-def test_dense_tables_combination_rule_and_overrides():
-    """Unlisted pairs follow combination rule 1, listed pairs overwrite them."""
+def _prior(types, has_rule, c6, c12):
+    """A small TypePrior for tests (epsilon/sigma are not used by the tables)."""
+    z = np.zeros_like(np.asarray(c6, float))
+    return TypePrior(np.array(types), np.array(has_rule), np.array(c6, float), np.array(c12, float), z, z)
+
+
+def test_dense_tables_precedence():
+    """Override > type prior (where a rule exists) > combination rule 1."""
+    # three atoms: chemical types X, X, Y; the prior defines only X-Y
+    prior = _prior(["X", "Y"], [[False, True], [True, False]], [[0, 0.3], [0.3, 0]], [[0, 5.0], [5.0, 0]])
     nb = paramfile.NonbondedParameters(
         sb_types=np.array(["A", "B", "C"]),
-        default_c6=np.array([0.0, 0.0, 0.0]),
+        chem_type=np.array([0, 0, 1]),
+        default_c6=np.zeros(3),
         default_c12=np.array([1.0, 4.0, 9.0]),
-        pair_types=np.array([[0, 2]]),
-        pair_c6=np.array([0.5]),
-        pair_c12=np.array([7.0]),
+        prior=prior,
+        overrides={"i": np.array([1]), "j": np.array([2]), "c6": np.array([0.5]), "c12": np.array([7.0])},
     )
     c6, c12 = nb.dense_tables()
-    assert c12[0, 1] == c12[1, 0] == pytest.approx(2.0)  # sqrt(1*4)
-    assert c12[0, 2] == c12[2, 0] == 7.0  # override, symmetric
-    assert c6[0, 2] == c6[2, 0] == 0.5
-    assert c6[0, 1] == 0.0
+    assert c12[0, 1] == c12[1, 0] == pytest.approx(2.0)  # X-X: no rule -> sqrt(1*4)
+    assert c12[0, 2] == c12[2, 0] == 5.0  # X-Y: prior
+    assert c6[0, 2] == 0.3
+    assert c12[1, 2] == c12[2, 1] == 7.0  # override, symmetric
+    assert c6[1, 2] == 0.5
 
 
 def test_parameter_file_roundtrip(tmp_path):
@@ -90,16 +100,19 @@ def test_parameter_file_roundtrip(tmp_path):
         term: {col: np.array([], dtype=dt) for col, dt in cols} for term, cols in paramfile.BONDED_COLUMNS.items()
     }
     bonded["bonds"] = {"ai": np.array([0]), "aj": np.array([1]), "r0": np.array([0.147]), "k": np.array([9e4])}
+    prior = _prior(["CH1", "N"], [[True, False], [False, False]], [[1e-3, 0], [0, 0]], [[2e-6, 0], [0, 0]])
     nb = paramfile.NonbondedParameters(
         np.array(["N_X_1", "CA_X_1"]),
+        np.array([1, 0]),
         np.zeros(2),
         np.array([1e-6, 2e-6]),
-        np.array([[0, 1]]),
-        np.array([1e-3]),
-        np.array([3e-6]),
+        prior,
+        {"i": np.array([0]), "j": np.array([1]), "c6": np.array([1e-3]), "c12": np.array([3e-6])},
     )
     original = paramfile.MegoParameters(
-        {"X": paramfile.MoleculeParameters("X", atoms, bonded)}, nb, {"format_version": 1, "nrexcl": 3}
+        {"X": paramfile.MoleculeParameters("X", atoms, bonded)},
+        nb,
+        {"format_version": paramfile.FORMAT_VERSION, "nrexcl": 3},
     )
     path = tmp_path / "p.h5"
     paramfile.write(path, original)
@@ -109,8 +122,10 @@ def test_parameter_file_roundtrip(tmp_path):
         np.testing.assert_array_equal(back.molecules["X"].atoms[col], values)
     np.testing.assert_array_equal(back.molecules["X"].bonded["bonds"]["k"], [9e4])
     assert len(back.molecules["X"].bonded["pairs"]["ai"]) == 0
-    np.testing.assert_array_equal(back.nonbonded.pair_types, [[0, 1]])
-    np.testing.assert_array_equal(back.nonbonded.default_c12, [1e-6, 2e-6])
+    np.testing.assert_array_equal(back.nonbonded.prior.types, ["CH1", "N"])
+    np.testing.assert_array_equal(back.nonbonded.prior.has_rule, prior.has_rule)
+    for table_back, table in zip(back.nonbonded.dense_tables(), nb.dense_tables()):
+        np.testing.assert_array_equal(table_back, table)
 
 
 def test_parse_molecules():

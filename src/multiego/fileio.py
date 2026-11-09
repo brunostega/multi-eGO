@@ -279,16 +279,22 @@ def read_molecular_contacts(path, ensemble_molecules_idx_sbtype_dictionary, simu
     return contact_matrix
 
 
-def write_nonbonded(topology_dataframe, meGO_LJ, parameters, output_folder):
+def write_nonbonded(topology_dataframe, nonbonded_model, parameters, output_folder):
     """
     Writes the non-bonded parameter file ffnonbonded.itp.
+
+    The ``[ nonbond_params ]`` section can contain ~10^6 lines for a protein of
+    ~1,500 atoms.  It is streamed: the explicit pairs are generated one row of
+    the N x N table at a time by ``nonbonded_model.iter_rows`` and written
+    immediately, so the full table never exists in memory (neither as a
+    DataFrame nor as one large string).
 
     Parameters
     ----------
     topology_dataframe : pd.DataFrame
         The topology of the system as a dataframe
-    meGO_LJ : pd.DataFrame
-        The LJ c6 and c12 values which make up the nonbonded potential
+    nonbonded_model : nonbonded.NonbondedModel
+        The nonbonded parameters (prior + overrides) of the model
     parameters : dict
         Contains the input parameters set from the terminal
     output_folder : str
@@ -322,15 +328,36 @@ def write_nonbonded(topology_dataframe, meGO_LJ, parameters, output_folder):
         atomtypes["c12"] = atomtypes["c12"].map("{:.6e}".format)
         file.write(dataframe_to_write(atomtypes))
 
-        if not meGO_LJ.empty:
+        rows = nonbonded_model.iter_rows()
+        first = next(rows, None)
+        if first is not None:
             file.write("\n\n[ nonbond_params ]\n")
-            meGO_LJ.insert(5, ";", ";")
-            # float_format is passed through to to_string(), so c6/c12 are formatted
-            # at the C level without the Python-loop overhead of a prior .map() call.
-            file.write(dataframe_to_write(meGO_LJ, float_format="%.6e"))
+            # Fixed-width columns: the width of the atom-name columns is the
+            # longest sb_type, so that the file stays aligned and readable.
+            w = max(4, max(len(t) for t in nonbonded_model.sb_type))
+            file.write(
+                f"{'; ai':>{w}} {'aj':>{w}} type {'c6':>12} {'c12':>12} ; "
+                f"{'same_chain':>10} {'source':>8} {'number_ai':>9} {'number_aj':>9}\n"
+            )
+            for chunk in itertools.chain([first], rows):
+                file.write(
+                    "".join(
+                        f"{ai:>{w}} {aj:>{w}}    1 {c6:.6e} {c12:.6e} ; {str(sc):>10} {src:>8} {ni:>9} {nj:>9}\n"
+                        for ai, aj, c6, c12, sc, src, ni, nj in zip(
+                            chunk["ai"],
+                            chunk["aj"],
+                            chunk["c6"],
+                            chunk["c12"],
+                            chunk["same_chain"],
+                            chunk["source"],
+                            chunk["number_ai"],
+                            chunk["number_aj"],
+                        )
+                    )
+                )
 
 
-def write_model(meGO_ensemble, meGO_LJ, meGO_LJ_14, parameters, stat_str):
+def write_model(meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, stat_str):
     """
     Takes care of the final print-out and the file writing of the force field.
 
@@ -342,8 +369,8 @@ def write_model(meGO_ensemble, meGO_LJ, meGO_LJ_14, parameters, stat_str):
     ----------
     meGO_ensemble : dict
         The meGO_ensemble object which contains all the system information
-    meGO_LJ : pd.DataFrame
-        Contains the c6 and c12 LJ parameters of the nonbonded potential
+    nonbonded_model : nonbonded.NonbondedModel
+        The nonbonded LJ parameters (mg prior + learned overrides)
     meGO_LJ_14 : pd.DataFrame
         Contains the c6 and c12 LJ parameters of the pairs and exclusions
     parameters : dict
@@ -353,16 +380,15 @@ def write_model(meGO_ensemble, meGO_LJ, meGO_LJ_14, parameters, stat_str):
         get_outdir_name(f"{parameters.outputs_dir}/{parameters.system}", parameters.explicit_name, parameters.egos)
     )
     create_output_directories(parameters, output_dir)
-    meGO_LJ = sort_LJ(meGO_ensemble, meGO_LJ)
     backend = getattr(parameters, "backend", "both")
 
-    # OpenMM parameter file.  Written first: the GROMACS writers below modify
-    # the DataFrames they receive (they insert a ";" comment column).
+    # OpenMM parameter file.  Written first: the GROMACS topology writer below
+    # modifies the DataFrames it receives (it inserts a ";" comment column).
     if backend in ("openmm", "both"):
         from multiego.omm import paramfile
 
         params = paramfile.from_generation(
-            meGO_ensemble, meGO_LJ, meGO_LJ_14, parameters, attrs={"mego_version": _mego_version()}
+            meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, attrs={"mego_version": _mego_version()}
         )
         paramfile.write(f"{output_dir}/{paramfile.DEFAULT_FILENAME}", params)
 
@@ -376,13 +402,13 @@ def write_model(meGO_ensemble, meGO_LJ, meGO_LJ_14, parameters, stat_str):
             parameters,
             output_dir,
         )
-        write_nonbonded(meGO_ensemble.topology_dataframe, meGO_LJ, parameters, output_dir)
+        write_nonbonded(meGO_ensemble.topology_dataframe, nonbonded_model, parameters, output_dir)
     save_matrix_png(output_dir)
-    write_output_readme(meGO_LJ, parameters, output_dir, stat_str)
+    write_output_readme(parameters, output_dir, stat_str)
     return output_dir
 
 
-def write_output_readme(meGO_LJ, parameters, output_dir, stat_str):
+def write_output_readme(parameters, output_dir, stat_str):
     """
     Writes a README file with the parameters used to generate the multi-eGO topology.
 
@@ -428,16 +454,27 @@ def save_matrix_png(output_path):
     
 
 def print_stats(meGO_LJ):
+    """
+    Summary statistics of a set of LJ interactions (printed and logged).
+
+    ``meGO_LJ`` has one row per interaction with columns ``same_chain``,
+    ``epsilon`` and ``sigma``.  An optional integer column ``count`` gives the
+    number of atom pairs each row stands for: this lets the mg prior, stored
+    once per pair of chemical types, report the same numbers as the former
+    one-row-per-atom-pair DataFrame without building it.
+    """
     # it would be nice to cycle over molecule types and print an half matrix with all the relevant information
+    if "count" not in meGO_LJ.columns:
+        meGO_LJ = meGO_LJ.assign(count=1)
     intra = meGO_LJ[meGO_LJ["same_chain"]]
     inter = meGO_LJ[~meGO_LJ["same_chain"]]
     intra_att = intra[intra["epsilon"] > 0.0]
     inter_att = inter[inter["epsilon"] > 0.0]
 
-    intrad_contacts = len(intra)
-    interm_contacts = len(inter)
-    intrad_a_contacts = len(intra_att)
-    interm_a_contacts = len(inter_att)
+    intrad_contacts = int(intra["count"].sum())
+    interm_contacts = int(inter["count"].sum())
+    intrad_a_contacts = int(intra_att["count"].sum())
+    interm_a_contacts = int(inter_att["count"].sum())
     intrad_r_contacts = intrad_contacts - intrad_a_contacts
     interm_r_contacts = interm_contacts - interm_a_contacts
 
@@ -447,21 +484,21 @@ def print_stats(meGO_LJ):
     interm_a_s_min_contacts = interm_a_s_max_contacts = 0.0
 
     if intrad_a_contacts > 0:
-        intrad_a_ave_contacts = intra_att["epsilon"].mean()
+        intrad_a_ave_contacts = np.average(intra_att["epsilon"], weights=intra_att["count"])
         intrad_a_min_contacts = intra_att["epsilon"].min()
         intrad_a_max_contacts = intra_att["epsilon"].max()
         intrad_a_s_min_contacts = intra_att["sigma"].min()
         intrad_a_s_max_contacts = intra_att["sigma"].max()
 
     if interm_a_contacts > 0:
-        interm_a_ave_contacts = inter_att["epsilon"].mean()
+        interm_a_ave_contacts = np.average(inter_att["epsilon"], weights=inter_att["count"])
         interm_a_min_contacts = inter_att["epsilon"].min()
         interm_a_max_contacts = inter_att["epsilon"].max()
         interm_a_s_min_contacts = inter_att["sigma"].min()
         interm_a_s_max_contacts = inter_att["sigma"].max()
 
     stat_str = f"""
-\t- LJ parameterization completed for a total of {len(meGO_LJ)} contacts.
+\t- LJ parameterization completed for a total of {int(meGO_LJ['count'].sum())} contacts.
 \t- Attractive: intra-molecular: {intrad_a_contacts}, inter-molecular: {interm_a_contacts}
 \t- Repulsive: intra-molecular: {intrad_r_contacts}, inter-molecular: {interm_r_contacts}
 \t- The average epsilon is: {intrad_a_ave_contacts:5.3f} {interm_a_ave_contacts:5.3f} kJ/mol
@@ -801,54 +838,3 @@ def parse_json(file_path):
     except (json.JSONDecodeError, ValueError) as e:
         raise ValueError(f"Error reading custom dictionary {file_path}: {e}") from e
 
-
-def sort_LJ(meGO_ensemble, meGO_LJ):
-    """
-    Sorts and deduplicates the final LJ DataFrame for output, ensuring ai <= aj
-    ordering both within and across molecules.
-
-    Parameters
-    ----------
-    meGO_ensemble : dict
-        The initialized meGO ensemble.
-    meGO_LJ : pd.DataFrame
-        The LJ DataFrame from generate_LJ.
-
-    Returns
-    -------
-    pd.DataFrame
-        Sorted and deduplicated LJ DataFrame ready for writing.
-    """
-    meGO_LJ["type"] = 1
-    meGO_LJ["number_ai"] = meGO_LJ["ai"].map(meGO_ensemble.sbtype_number_dict).astype(int)
-    meGO_LJ["number_aj"] = meGO_LJ["aj"].map(meGO_ensemble.sbtype_number_dict).astype(int)
-
-    meGO_LJ = meGO_LJ[(meGO_LJ["ai"].cat.codes <= meGO_LJ["aj"].cat.codes)].copy()
-
-    # Canonical ordering: swap (ai, aj) so that molecule_name_ai <= molecule_name_aj,
-    # and within the same molecule so that number_ai <= number_aj.
-    cols_i = ["ai", "molecule_name_ai", "number_ai"]
-    cols_j = ["aj", "molecule_name_aj", "number_aj"]
-    swap_mol = meGO_LJ["molecule_name_ai"].astype(str) > meGO_LJ["molecule_name_aj"].astype(str)
-    swap_same = (meGO_LJ["molecule_name_ai"] == meGO_LJ["molecule_name_aj"]) & (
-        meGO_LJ["number_ai"] > meGO_LJ["number_aj"]
-    )
-    swap = swap_mol | swap_same
-    if swap.any():
-        meGO_LJ.loc[swap, cols_i + cols_j] = meGO_LJ.loc[swap, cols_j + cols_i].values
-
-    meGO_LJ.sort_values(by=["molecule_name_ai", "molecule_name_aj", "number_ai", "number_aj"], inplace=True)
-
-    final_fields = [
-        "ai",
-        "aj",
-        "type",
-        "c6",
-        "c12",
-        "same_chain",
-        "source",
-        "number_ai",
-        "number_aj",
-    ]
-
-    return meGO_LJ[final_fields]
