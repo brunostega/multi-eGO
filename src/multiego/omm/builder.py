@@ -16,6 +16,9 @@ improper_dihedrals  CustomTorsionForce       k/2 (xi - xi0)^2, periodic differen
 pairs               CustomBondForce          c12/r^12 - c6/r^6, no cut-off
 nonbonded           CustomNonbondedForce     c12/r^12 - c6/r^6 from type tables,
                                              cut-off + potential shift
+hbonds              CustomHbondForce         optional geometric backbone hydrogen
+                                             bonds, replacing the H-O LJ (see
+                                             multiego.omm.hbond)
 plus a CMMotionRemover (GROMACS ``comm_mode = linear``, ``nstcomm = 20``).
 
 There is no electrostatics term: all multi-eGO charges are zero.
@@ -32,6 +35,8 @@ from collections import defaultdict, deque
 import numpy as np
 import openmm as mm
 import openmm.app as app
+
+from multiego.omm import hbond as hbond_term
 
 # Non-bonded cut-off of the multi-eGO .mdp files (rvdw, nm).
 DEFAULT_CUTOFF = 2.5
@@ -56,7 +61,8 @@ def lj_expression(cutoff, potential_shift):
     ``E(r) - E(rc) = c12 (1/r^12 - 1/rc^12) - c6 (1/r^6 - 1/rc^6)``.
     The shift is a constant per type pair: forces are unaffected.
     """
-    irc6 = 1.0 / cutoff**6 if potential_shift else 0.0
+    # float(): a numpy scalar would print as "np.float64(...)" in the expression
+    irc6 = 1.0 / float(cutoff) ** 6 if potential_shift else 0.0
     irc12 = irc6**2
     return (
         f"c12*(ir6*ir6 - {irc12!r}) - c6*(ir6 - {irc6!r});"
@@ -141,6 +147,7 @@ def create_system(
     cutoff=DEFAULT_CUTOFF,
     potential_shift=True,
     com_removal_interval=20,
+    hbond=None,
 ):
     """
     Build the OpenMM System of a multi-eGO model.
@@ -161,6 +168,10 @@ def create_system(
         Shift the LJ potential to zero at the cut-off.
     com_removal_interval : int
         Steps between centre-of-mass motion removal (0 disables it).
+    hbond : None, False or multiego.omm.hbond.HBondSettings
+        Geometric hydrogen-bond term.  ``None`` (default): as stored in the
+        parameter file (``--hbond`` at generation); ``False``: never;
+        ``HBondSettings``: always, with these settings.
 
     Returns
     -------
@@ -186,13 +197,6 @@ def create_system(
 
     nonbonded = mm.CustomNonbondedForce(lj_expression(cutoff, potential_shift))
     nonbonded.addPerParticleParameter("type")
-    c6_table, c12_table = params.nonbonded.dense_tables()
-    n_types = params.nonbonded.n_types
-    # Discrete2DFunction stores values with the first index varying fastest;
-    # the tables are symmetric, so the flattening order is irrelevant anyway.
-    nonbonded.addTabulatedFunction("c6tab", mm.Discrete2DFunction(n_types, n_types, c6_table.ravel(order="F")))
-    nonbonded.addTabulatedFunction("c12tab", mm.Discrete2DFunction(n_types, n_types, c12_table.ravel(order="F")))
-    del c6_table, c12_table
     nonbonded.setNonbondedMethod(mm.CustomNonbondedForce.CutoffPeriodic)
     nonbonded.setCutoffDistance(cutoff)
     # DispCorr = No.  Also essential for speed: with one type per atom the
@@ -211,6 +215,9 @@ def create_system(
         if force is not nonbonded:
             force.setUsesPeriodicBoundaryConditions(True)
 
+    hbond_settings = params.hbond if hbond is None else (hbond or None)
+    donors, acceptors, all_exclusions = [], [], set()
+
     # --- add the atoms and interactions of every molecule copy ---
     offset = 0
     for name, count in composition:
@@ -221,6 +228,8 @@ def create_system(
         for key in ("exclusions", "pairs"):
             exclusions.update((min(int(i), int(j)), max(int(i), int(j))) for i, j in zip(b[key]["ai"], b[key]["aj"]))
         exclusions = sorted(exclusions)
+        if hbond_settings is not None:
+            mol_donors, mol_acceptors = hbond_term.find_donors_acceptors(mol.atoms)
 
         for _ in range(count):
             for k in range(mol.n_atoms):
@@ -250,7 +259,26 @@ def create_system(
                 pairs.addBond(offset + int(i), offset + int(j), [float(c6), float(c12)])
             for i, j in exclusions:
                 nonbonded.addExclusion(offset + i, offset + j)
+            if hbond_settings is not None:
+                types = mol.atoms["nb_type"]
+                donors += [(offset + h, offset + n, int(types[h])) for h, n in zip(mol_donors["h"], mol_donors["n"])]
+                acceptors += [
+                    (offset + o, offset + c, int(types[o])) for o, c in zip(mol_acceptors["o"], mol_acceptors["c"])
+                ]
+                all_exclusions.update((offset + i, offset + j) for i, j in exclusions)
             offset += mol.n_atoms
+
+    # --- LJ type tables (and the optional hydrogen-bond term, which takes
+    #     over the donor-acceptor entries of the tables) ---
+    c6_table, c12_table = params.nonbonded.dense_tables()
+    if hbond_settings is not None and donors and acceptors:
+        hbond_term.add_hbond_force(system, hbond_settings, c6_table, c12_table, donors, acceptors, all_exclusions)
+    n_types = params.nonbonded.n_types
+    # Discrete2DFunction stores values with the first index varying fastest;
+    # the tables are symmetric, so the flattening order is irrelevant anyway.
+    nonbonded.addTabulatedFunction("c6tab", mm.Discrete2DFunction(n_types, n_types, c6_table.ravel(order="F")))
+    nonbonded.addTabulatedFunction("c12tab", mm.Discrete2DFunction(n_types, n_types, c12_table.ravel(order="F")))
+    del c6_table, c12_table
 
     for force in (bonds, angles, propers, impropers, pairs, nonbonded):
         system.addForce(force)

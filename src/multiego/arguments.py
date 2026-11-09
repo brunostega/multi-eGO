@@ -63,6 +63,33 @@ _args_dict_shared = {
         "gromacs: ffnonbonded.itp + topol_mego.top; both (default): both formats. "
         "The GROMACS files are still needed by cmdata/make_mat and as reference topology in production runs.",
     },
+    "--hbond": {
+        "default": False,
+        "action": "store_true",
+        "help": "OpenMM backend only: replace the isotropic backbone H-O Lennard-Jones interaction by a geometric "
+        "hydrogen-bond term (distance and N-H...O / H...O=C angles, see multiego/omm/hbond.py). "
+        "Not written in the GROMACS files.",
+    },
+    "--hbond_epsilon": {
+        "default": None,
+        "type": float,
+        "help": "Depth of the hydrogen-bond well (kJ/mol). Default: the epsilon of each H-O Lennard-Jones pair.",
+    },
+    "--hbond_r0": {
+        "default": None,
+        "type": float,
+        "help": "Position of the hydrogen-bond well (nm). Default: the LJ minimum of each H-O pair.",
+    },
+    "--hbond_width": {
+        "default": None,
+        "type": float,
+        "help": "Gaussian width of the hydrogen-bond well (nm). Default: 0.193 r_min, the half-depth width of the LJ well.",
+    },
+    "--hbond_cutoff": {
+        "default": 0.5,
+        "type": float,
+        "help": "H...O cut-off of the hydrogen-bond term (nm).",
+    },
     "--outputs_dir": {
         "default": None,
         "type": str,

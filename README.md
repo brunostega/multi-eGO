@@ -199,6 +199,15 @@ Several copies of a molecule are simulated with `--molecules NAME:COUNT,...` (th
 section). The trajectory is written as `.xtc`, so it can be analysed with `cmdata` (step 4) using a `.tpr`
 generated from the GROMACS files. A run is continued with `--restart reference.chk`.
 
+#### Geometric hydrogen bonds (OpenMM only)
+
+Adding `--hbond` when generating the force field replaces, in OpenMM simulations, the isotropic Lennard-Jones
+attraction between backbone amide H and carbonyl O by a term that also depends on the N–H···O and H···O=C angles.
+For a linear hydrogen bond the term reproduces the original Lennard-Jones well (same depth and position, the
+repulsive wall is unchanged); it vanishes for non-hydrogen-bonding orientations. Depth, position and width can be
+fixed with `--hbond_epsilon`, `--hbond_r0` and `--hbond_width`; see `src/multiego/omm/hbond.py` for the functional
+form. The GROMACS files are not affected by this option.
+
 #### Running with GROMACS
 
 Run the reference simulation using the provided `mdp` files in order:

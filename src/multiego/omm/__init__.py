@@ -15,6 +15,9 @@ paramfile
 builder
     Builds the OpenMM ``System``/``Topology`` from a parameter file (the
     OpenMM counterpart of ``grompp``).
+hbond
+    Optional geometric backbone hydrogen-bond term (``--hbond``), replacing
+    the isotropic H-O Lennard-Jones interaction; OpenMM only.
 simulate
     Command-line simulation runner (the counterpart of the ``.mdp`` files and
     ``gmx mdrun``); also available as ``mego_simulate.py``/``mego-simulate``.

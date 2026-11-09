@@ -394,6 +394,10 @@ def write_model(meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, stat_str
 
     # GROMACS topology + nonbonded parameters.
     if backend in ("gromacs", "both"):
+        if getattr(parameters, "hbond", False):
+            _term.warn(
+                "--hbond is an OpenMM-only term: the GROMACS files keep the isotropic H-O Lennard-Jones interaction."
+            )
         write_topology(
             meGO_ensemble.topology_dataframe,
             meGO_ensemble.molecule_type_dict,
@@ -447,11 +451,13 @@ def write_output_readme(parameters, output_dir, stat_str):
             f.write(f" - EMAX_SC_BKBN: {type_definitions.EMAX_SC_BKBN}\n")
             f.write(f" - OM_SCALEDOWN: {type_definitions.OM_SCALEDOWN}\n")
 
+
 def save_matrix_png(output_path):
     # import matrix from type definition and use the class function to plot it
     from .type_definitions import matrix
+
     matrix.plot_energy_matrix(out_path=f"{output_path}/energy_matrix.png", show=False)
-    
+
 
 def print_stats(meGO_LJ):
     """
@@ -837,4 +843,3 @@ def parse_json(file_path):
         return custom_dict
     except (json.JSONDecodeError, ValueError) as e:
         raise ValueError(f"Error reading custom dictionary {file_path}: {e}") from e
-

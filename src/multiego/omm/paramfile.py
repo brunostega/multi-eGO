@@ -16,7 +16,9 @@ Layout (format version 2)
 
     /                         attrs: format_version, mego_version, egos, system,
                                      created, arguments (JSON of the CLI args),
-                                     nrexcl
+                                     nrexcl, and -- only when the geometric
+                                     hydrogen-bond term is enabled -- hbond
+                                     (JSON of omm.hbond.HBondSettings)
     /molecules/<name>/        one group per molecule type, attrs: order (int)
         atoms/                one entry per atom, in topology order
             sb_type           str    structure-based type, e.g. "CA_GB1_12"
@@ -157,6 +159,15 @@ class MegoParameters:
     def nrexcl(self):
         return int(self.attrs.get("nrexcl", 3))
 
+    @property
+    def hbond(self):
+        """HBondSettings if the hydrogen-bond term is enabled, else None."""
+        if "hbond" not in self.attrs:
+            return None
+        from multiego.omm.hbond import HBondSettings
+
+        return HBondSettings.from_json(self.attrs["hbond"])
+
 
 # ---------------------------------------------------------------------------
 # Construction from the multi-eGO generation data structures
@@ -293,6 +304,15 @@ def from_generation(meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, attr
         "arguments": json.dumps({k: v for k, v in vars(parameters).items()}, default=str),
         "nrexcl": 3,  # same as the [ moleculetype ] written by the GROMACS backend
     }
+    if getattr(parameters, "hbond", False):
+        from multiego.omm.hbond import HBondSettings
+
+        file_attrs["hbond"] = HBondSettings(
+            epsilon=parameters.hbond_epsilon,
+            r0=parameters.hbond_r0,
+            width=parameters.hbond_width,
+            cutoff=parameters.hbond_cutoff,
+        ).to_json()
     file_attrs.update(attrs or {})
     return MegoParameters(molecules, nonbonded, file_attrs)
 
