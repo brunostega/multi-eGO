@@ -1,0 +1,29 @@
+[
+  {
+    "bonds": 131.04089087190127,
+    "angles": 398.85029844216456,
+    "proper_dihedrals": 478.6692047081534,
+    "improper_dihedrals": 25.024507593213936,
+    "pairs": 581.065241592081,
+    "nonbonded": -189.69727435272006,
+    "electrostatics": 0.0
+  },
+  {
+    "bonds": 17875.220748991134,
+    "angles": 15764.227294200107,
+    "proper_dihedrals": 993.4570297897209,
+    "improper_dihedrals": 3929.590224198197,
+    "pairs": 27506.33936463671,
+    "nonbonded": 478.701698804667,
+    "electrostatics": 0.0
+  },
+  {
+    "bonds": 15869.552358960073,
+    "angles": 16373.179609585219,
+    "proper_dihedrals": 996.3258054084586,
+    "improper_dihedrals": 3281.9293744414667,
+    "pairs": 796.1643770025681,
+    "nonbonded": -134.97486587788288,
+    "electrostatics": 0.0
+  }
+]

@@ -16,6 +16,7 @@ dependencies = [
     "scipy>=1.15.1",
     "tables>=3.9.2",
     "networkx>=3.2.1",
+    "openmm>=8.1",
     "biopython",
     "peptidebuilder",
 ]

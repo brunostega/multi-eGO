@@ -37,6 +37,7 @@ jobs:
          pytest tests/test_multiego.py
          pytest tests/test_apply_symmetries.py
          pytest tests/test_symmetrize_reference_contacts.py
+         pytest tests/test_openmm_parity.py
 
   lint:
     runs-on: ubuntu-latest
