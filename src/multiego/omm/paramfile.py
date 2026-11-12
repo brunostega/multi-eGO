@@ -10,7 +10,7 @@ is therefore the same as with GROMACS.
 
 All values are stored in OpenMM units: nm, rad, kJ/mol, amu.
 
-Layout (format version 2)
+Layout (format version 3)
 -------------------------
 ::
 
@@ -35,6 +35,12 @@ Layout (format version 2)
         improper_dihedrals    ai, aj, ak, al, theta0, k     harmonic, E = k/2 (xi-xi0)^2
         pairs                 ai, aj, c6, c12               E = c12/r^12 - c6/r^6 (no cut-off)
         exclusions            ai, aj                        explicit exclusions
+    /cmap/                    optional backbone CMAP corrections
+        maps/<resname>        float (S, S) energy in kJ/mol, [phi, psi],
+                              periodic grid of 360/S degrees (see multiego.cmap)
+        residues/molecule     str   one entry per CMAP-corrected residue:
+        residues/index        int   molecule name and the atom indices of
+        residues/c0,n,ca,c,n1 int   phi = c0-n-ca-c, psi = n-ca-c-n1
     /nonbonded/
         sb_types              str   all sb_types of all molecule types; the
                                     position in this list is the table index
@@ -78,7 +84,7 @@ import numpy as np
 
 from multiego.nonbonded import TypePrior, dense_tables
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 DEFAULT_FILENAME = "mego_params.h5"
 
 # Columns of each bonded table: (name, dtype).  Atom indices come first.
@@ -148,12 +154,28 @@ class NonbondedParameters:
 
 
 @dataclass
+class CmapParameters:
+    """
+    Backbone CMAP corrections: the maps themselves, and the list of residues
+    they apply to (with the five atoms defining phi and psi).
+    """
+
+    maps: dict  # residue name -> (S, S) array, kJ/mol, [phi, psi]
+    residues: dict  # arrays: molecule, index (into maps order), c0, n, ca, c, n1
+
+    def map_order(self):
+        """Residue names in a fixed order; the index stored per residue."""
+        return sorted(self.maps)
+
+
+@dataclass
 class MegoParameters:
     """Content of a multi-eGO parameter file."""
 
     molecules: dict  # name -> MoleculeParameters, in topology order
     nonbonded: NonbondedParameters
     attrs: dict = field(default_factory=dict)
+    cmap: object = None  # CmapParameters, or None when no CMAP is used
 
     @property
     def nrexcl(self):
@@ -252,7 +274,32 @@ def _bonded_tables(bonded_interactions, pairs_14):
     return tables
 
 
-def from_generation(meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, attrs=None):
+def cmap_from_maps(molecules, maps):
+    """
+    Build :class:`CmapParameters` by locating, in every molecule, the residues
+    whose name has a CMAP and that have a complete phi/psi backbone
+    (C of the previous residue and N of the next one must exist, so the first
+    and last residues of a chain are skipped -- as are the Ace/Nme caps).
+    """
+    order = {name: i for i, name in enumerate(sorted(maps))}
+    columns = {k: [] for k in ("molecule", "index", "c0", "n", "ca", "c", "n1")}
+    for name, mol in molecules.items():
+        atoms = {(int(r), str(a)): k for k, (r, a) in enumerate(zip(mol.atoms["resnum"], mol.atoms["name"]))}
+        for resnum, resname in sorted({(int(r), str(n)) for r, n in zip(mol.atoms["resnum"], mol.atoms["resname"])}):
+            if resname not in order:
+                continue
+            needed = [(resnum - 1, "C"), (resnum, "N"), (resnum, "CA"), (resnum, "C"), (resnum + 1, "N")]
+            if any(key not in atoms for key in needed):
+                continue  # chain terminus: phi or psi undefined
+            columns["molecule"].append(name)
+            columns["index"].append(order[resname])
+            for column, key in zip(("c0", "n", "ca", "c", "n1"), needed):
+                columns[column].append(atoms[key])
+    arrays = {k: np.array(v, dtype=object if k == "molecule" else int) for k, v in columns.items()}
+    return CmapParameters(maps, arrays)
+
+
+def from_generation(meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, attrs=None, cmap_maps=None):
     """
     Build :class:`MegoParameters` from the data structures of the generation
     pipeline, i.e. from exactly what the GROMACS writer receives.
@@ -314,7 +361,8 @@ def from_generation(meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, attr
             cutoff=parameters.hbond_cutoff,
         ).to_json()
     file_attrs.update(attrs or {})
-    return MegoParameters(molecules, nonbonded, file_attrs)
+    cmap = cmap_from_maps(molecules, cmap_maps) if cmap_maps else None
+    return MegoParameters(molecules, nonbonded, file_attrs, cmap)
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +416,12 @@ def write(path, params):
         for name in ("has_rule", "c6", "c12", "epsilon", "sigma"):
             f["nonbonded/prior"].create_dataset(name, data=getattr(p, name))
         _write_table(f["nonbonded"], "overrides", nb.overrides)
+        if params.cmap is not None:
+            g = f.create_group("cmap")
+            maps = g.create_group("maps")
+            for name in params.cmap.map_order():
+                maps.create_dataset(name, data=params.cmap.maps[name])
+            _write_table(g, "residues", params.cmap.residues)
 
 
 def read(path):
@@ -397,4 +451,8 @@ def read(path):
             prior=prior,
             overrides=_read_table(g["overrides"]),
         )
-    return MegoParameters(molecules, nonbonded, attrs)
+        cmap = None
+        if "cmap" in f:
+            maps = {name: ds[()] for name, ds in f["cmap/maps"].items()}
+            cmap = CmapParameters(maps, _read_table(f["cmap/residues"]))
+    return MegoParameters(molecules, nonbonded, attrs, cmap)

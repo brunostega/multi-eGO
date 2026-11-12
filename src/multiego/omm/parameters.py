@@ -169,7 +169,8 @@ def extract(system):
         elif isinstance(force, mm.CustomBondForce):
             _pairs(force, out)
         else:
-            # e.g. the hydrogen-bond term: compared through energies only.
+            # e.g. the hydrogen-bond and CMAP terms: compared through
+            # energies only.
             params.pop(term)
     return params
 

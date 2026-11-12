@@ -16,6 +16,8 @@ improper_dihedrals  CustomTorsionForce       k/2 (xi - xi0)^2, periodic differen
 pairs               CustomBondForce          c12/r^12 - c6/r^6, no cut-off
 nonbonded           CustomNonbondedForce     c12/r^12 - c6/r^6 from type tables,
                                              cut-off + potential shift
+cmap                CMAPTorsionForce         optional backbone (phi, psi) correction
+                                             (see multiego.cmap)
 hbonds              CustomHbondForce         optional geometric backbone hydrogen
                                              bonds, replacing the H-O LJ (see
                                              multiego.omm.hbond)
@@ -36,6 +38,7 @@ import numpy as np
 import openmm as mm
 import openmm.app as app
 
+from multiego import cmap as cmap_module
 from multiego.omm import hbond as hbond_term
 
 # Non-bonded cut-off of the multi-eGO .mdp files (rvdw, nm).
@@ -216,7 +219,19 @@ def create_system(
             force.setUsesPeriodicBoundaryConditions(True)
 
     hbond_settings = params.hbond if hbond is None else (hbond or None)
-    donors, acceptors, all_exclusions = [], [], set()
+    donors, acceptors, all_exclusions, residue_of_atom = [], [], set(), {}
+
+    # Optional backbone CMAP: one map per residue type, applied to the
+    # residues listed in the parameter file.  Atom indices there are local to
+    # a molecule, so they are offset for every copy below.
+    cmap_force = None
+    if params.cmap is not None:
+        cmap_force = mm.CMAPTorsionForce()
+        cmap_force.setName("cmap")
+        for name in params.cmap.map_order():
+            grid = np.asarray(params.cmap.maps[name], dtype=float)
+            cmap_force.addMap(grid.shape[0], cmap_module.to_openmm_map(grid))
+        cmap_force.setUsesPeriodicBoundaryConditions(True)
 
     # --- add the atoms and interactions of every molecule copy ---
     offset = 0
@@ -259,8 +274,18 @@ def create_system(
                 pairs.addBond(offset + int(i), offset + int(j), [float(c6), float(c12)])
             for i, j in exclusions:
                 nonbonded.addExclusion(offset + i, offset + j)
+            if cmap_force is not None:
+                r = params.cmap.residues
+                for k in range(len(r["index"])):
+                    if str(r["molecule"][k]) != name:
+                        continue
+                    c0, n0, ca, c, n1 = (offset + int(r[col][k]) for col in ("c0", "n", "ca", "c", "n1"))
+                    # phi = c0-n-ca-c, psi = n-ca-c-n1
+                    cmap_force.addTorsion(int(r["index"][k]), c0, n0, ca, c, n0, ca, c, n1)
             if hbond_settings is not None:
                 types = mol.atoms["nb_type"]
+                for k in range(mol.n_atoms):
+                    residue_of_atom[offset + k] = (offset, int(mol.atoms["resnum"][k]))
                 donors += [(offset + h, offset + n, int(types[h])) for h, n in zip(mol_donors["h"], mol_donors["n"])]
                 acceptors += [
                     (offset + o, offset + c, int(types[o])) for o, c in zip(mol_acceptors["o"], mol_acceptors["c"])
@@ -272,7 +297,9 @@ def create_system(
     #     over the donor-acceptor entries of the tables) ---
     c6_table, c12_table = params.nonbonded.dense_tables()
     if hbond_settings is not None and donors and acceptors:
-        hbond_term.add_hbond_force(system, hbond_settings, c6_table, c12_table, donors, acceptors, all_exclusions)
+        hbond_term.add_hbond_force(
+            system, hbond_settings, c6_table, c12_table, donors, acceptors, all_exclusions, residue_of_atom
+        )
     n_types = params.nonbonded.n_types
     # Discrete2DFunction stores values with the first index varying fastest;
     # the tables are symmetric, so the flattening order is irrelevant anyway.
@@ -282,6 +309,8 @@ def create_system(
 
     for force in (bonds, angles, propers, impropers, pairs, nonbonded):
         system.addForce(force)
+    if cmap_force is not None:
+        system.addForce(cmap_force)
     if com_removal_interval:
         system.addForce(mm.CMMotionRemover(com_removal_interval))
     return system

@@ -357,6 +357,28 @@ def write_nonbonded(topology_dataframe, nonbonded_model, parameters, output_fold
                 )
 
 
+def read_cmap_directory(path):
+    """
+    Read the backbone CMAP corrections of ``--cmap``.
+
+    The directory holds one ``<RESNAME>.npz`` per residue type, with a square
+    grid in kJ/mol under the key ``cmap`` (the output of
+    ``tools/cmap_fit/fit_cmap.py``).  Returns ``None`` when no directory is
+    given, so that the caller writes no CMAP at all.
+    """
+    if not path:
+        return None
+    maps = {}
+    for filename in sorted(glob.glob(f"{path}/*.npz")):
+        resname = os.path.splitext(os.path.basename(filename))[0]
+        with np.load(filename) as data:
+            maps[resname] = np.array(data["cmap"], dtype=float)
+    if not maps:
+        raise FileNotFoundError(f"no <RESNAME>.npz CMAP file found in {path}")
+    print(f"- Using backbone CMAP corrections for: {', '.join(sorted(maps))}")
+    return maps
+
+
 def write_model(meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, stat_str):
     """
     Takes care of the final print-out and the file writing of the force field.
@@ -388,12 +410,19 @@ def write_model(meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, stat_str
         from multiego.omm import paramfile
 
         params = paramfile.from_generation(
-            meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, attrs={"mego_version": _mego_version()}
+            meGO_ensemble,
+            nonbonded_model,
+            meGO_LJ_14,
+            parameters,
+            attrs={"mego_version": _mego_version()},
+            cmap_maps=read_cmap_directory(getattr(parameters, "cmap", "")),
         )
         paramfile.write(f"{output_dir}/{paramfile.DEFAULT_FILENAME}", params)
 
     # GROMACS topology + nonbonded parameters.
     if backend in ("gromacs", "both"):
+        if getattr(parameters, "cmap", ""):
+            _term.warn("--cmap is an OpenMM-only term: the GROMACS files do not contain the backbone CMAP.")
         if getattr(parameters, "hbond", False):
             _term.warn(
                 "--hbond is an OpenMM-only term: the GROMACS files keep the isotropic H-O Lennard-Jones interaction."

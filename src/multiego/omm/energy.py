@@ -33,6 +33,7 @@ TERMS = (
     "improper_dihedrals",
     "pairs",  # intramolecular [ pairs ]: 1-4 and learned short-range contacts
     "nonbonded",  # type-table LJ: molten-globule prior + learned contacts
+    "cmap",  # optional backbone (phi, psi) correction (OpenMM only)
     "hbonds",  # optional geometric hydrogen-bond term (OpenMM only)
     "electrostatics",  # always zero in multi-eGO (all charges are 0)
 )

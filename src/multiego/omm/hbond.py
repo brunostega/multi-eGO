@@ -83,6 +83,13 @@ class HBondSettings:
     r0: float = None  # nm, position of the well
     width: float = None  # nm, Gaussian width of the well
     cutoff: float = 0.5  # nm, H...O cut-off of the term
+    # Minimum separation in residues between donor and acceptor.  The default
+    # of 3 removes the C5/C7 (gamma-turn) and i->i+2 interactions, which are
+    # local and already described by the backbone dihedrals / CMAP, and keeps
+    # the 3-10 (i->i+3) and alpha (i->i+4) hydrogen bonds.  This keeps the
+    # local conformational preference and the hydrogen-bond term independent,
+    # so that they can be calibrated separately.
+    min_residue_separation: int = 3
 
     def to_json(self):
         return json.dumps(asdict(self))
@@ -160,7 +167,7 @@ def energy_expression(settings):
     )
 
 
-def add_hbond_force(system, settings, c6_table, c12_table, donors, acceptors, excluded_pairs):
+def add_hbond_force(system, settings, c6_table, c12_table, donors, acceptors, excluded_pairs, residue_of_atom=None):
     """
     Add the hydrogen-bond force and remove the H-O entries it replaces from
     the LJ type tables.
@@ -176,6 +183,9 @@ def add_hbond_force(system, settings, c6_table, c12_table, donors, acceptors, ex
         Global particle indices and LJ type of every donor/acceptor.
     excluded_pairs : set of (i, j)
         Particle pairs excluded from the nonbonded force (i < j).
+    residue_of_atom : dict, optional
+        Particle index -> (molecule copy, residue number).  Used to apply
+        ``settings.min_residue_separation``; without it that rule is skipped.
 
     Returns
     -------
@@ -207,11 +217,22 @@ def add_hbond_force(system, settings, c6_table, c12_table, donors, acceptors, ex
     acceptor_of_o = {}
     for o, c, t in acceptors:
         acceptor_of_o[o] = force.addAcceptor(o, c, -1, [float(a_index[t])])
+    exclusions = set()
     for i, j in excluded_pairs:
         if i in donor_of_h and j in acceptor_of_o:
-            force.addExclusion(donor_of_h[i], acceptor_of_o[j])
+            exclusions.add((donor_of_h[i], acceptor_of_o[j]))
         elif j in donor_of_h and i in acceptor_of_o:
-            force.addExclusion(donor_of_h[j], acceptor_of_o[i])
+            exclusions.add((donor_of_h[j], acceptor_of_o[i]))
+    # Donor and acceptor too close along the same chain (see HBondSettings).
+    if residue_of_atom is not None and settings.min_residue_separation > 0:
+        for h, _, _ in donors:
+            chain_h, res_h = residue_of_atom[h]
+            for o, _, _ in acceptors:
+                chain_o, res_o = residue_of_atom[o]
+                if chain_h == chain_o and abs(res_h - res_o) < settings.min_residue_separation:
+                    exclusions.add((donor_of_h[h], acceptor_of_o[o]))
+    for d, a in sorted(exclusions):
+        force.addExclusion(d, a)
 
     # These pairs are now described by the hydrogen-bond force.
     for table in (c6_table, c12_table):

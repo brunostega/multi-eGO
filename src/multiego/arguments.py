@@ -63,6 +63,13 @@ _args_dict_shared = {
         "gromacs: ffnonbonded.itp + topol_mego.top; both (default): both formats. "
         "The GROMACS files are still needed by cmdata/make_mat and as reference topology in production runs.",
     },
+    "--cmap": {
+        "default": "",
+        "type": str,
+        "help": "OpenMM backend only: directory with backbone CMAP corrections, one <RESNAME>.npz per "
+        "residue type (key 'cmap', a square grid in kJ/mol indexed [phi, psi]), as produced by "
+        "tools/cmap_fit/fit_cmap.py. Not written in the GROMACS files.",
+    },
     "--hbond": {
         "default": False,
         "action": "store_true",
