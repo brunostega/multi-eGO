@@ -21,13 +21,35 @@ EPS, RMIN = 0.2, 0.1697
 C6 = 2 * EPS * RMIN**6  # LJ with minimum -EPS at RMIN
 C12 = EPS * RMIN**12
 N_H, O_C = 0.101, 0.123  # N-H and C=O bond lengths (nm)
+DEFAULTS = hbond.HBondSettings()
+
+
+def angular(theta, theta0, width):
+    """The Gaussian angular factor of the term (degrees)."""
+    if theta <= 90.0:
+        return 0.0
+    return float(np.exp(-np.deg2rad(theta - theta0) ** 2 / (2 * np.deg2rad(width) ** 2)))
+
+
+def expected(r, theta_nho, theta_hoc, settings=None, c6=C6, c12=C12):
+    """Analytic energy of the term, independent of the OpenMM implementation."""
+    settings = settings or hbond.HBondSettings()
+    if c6 == 0.0:
+        return c12 / r**12
+    eps, rmin = c6**2 / (4 * c12), (2 * c12 / c6) ** (1 / 6)
+    repulsion = c12 / r**12 - c6 / r**6 + eps if r < rmin else 0.0
+    depth = eps if settings.epsilon is None else settings.epsilon
+    radial = np.exp(-max(r - settings.r0, 0.0) ** 2 / (2 * settings.width**2))
+    return repulsion - depth * radial * angular(theta_nho, settings.donor_theta0, settings.donor_width) * angular(
+        theta_hoc, settings.acceptor_theta0, settings.acceptor_width
+    )
 
 
 def lj(r):
     return C12 / r**12 - C6 / r**6
 
 
-def hbond_energy(r, theta_nho=180.0, theta_hoc=180.0, settings=None, c6=C6, c12=C12):
+def hbond_energy(r, theta_nho=180.0, theta_hoc=147.0, settings=None, c6=C6, c12=C12):
     """
     Energy of the term for H...O distance r and the two angles (degrees).
     H at the origin, O on +x; N and C placed to give the requested angles.
@@ -56,7 +78,6 @@ def hbond_energy(r, theta_nho=180.0, theta_hoc=180.0, settings=None, c6=C6, c12=
 
 def test_geometry_helper():
     """Sanity check of the test geometry itself."""
-    # at 180/180 the energy at r_min is -eps: checked below; here check angles via cos
     for t in (180.0, 135.0, 90.0):
         t1 = np.deg2rad(t)
         n = N_H * np.array([np.cos(np.pi - t1) * -1, np.sin(np.pi - t1), 0.0])
@@ -64,44 +85,72 @@ def test_geometry_helper():
         assert np.rad2deg(np.arccos(cos_angle)) == pytest.approx(t)
 
 
-@pytest.mark.parametrize("r", [0.140, 0.150, 0.160, 0.1697])
-def test_ideal_geometry_equals_lj_inside_minimum(r):
-    """Linear H-bond, r <= r_min: identical to the original LJ."""
-    assert hbond_energy(r) == pytest.approx(lj(r), rel=1e-9, abs=1e-12)
+@pytest.mark.parametrize(
+    "r,nho,hoc",
+    [
+        (0.21, 180.0, 147.0),  # the optimum of the term
+        (0.22, 152.0, 142.0),  # measured alpha-helix geometry
+        (0.20, 158.0, 152.0),  # measured beta-sheet geometry
+        (0.24, 140.0, 101.0),  # measured 3-10 geometry
+        (0.16, 170.0, 150.0),  # inside the repulsive wall
+        (0.30, 150.0, 140.0),  # far out on the Gaussian tail
+    ],
+)
+def test_matches_analytic_form(r, nho, hoc):
+    """The OpenMM force reproduces the documented functional form exactly."""
+    assert hbond_energy(r, nho, hoc) == pytest.approx(expected(r, nho, hoc), rel=1e-8, abs=1e-12)
 
 
-def test_ideal_geometry_well_and_tail():
-    """At r_min the depth is eps; beyond, the well follows the LJ over the H-bond range."""
-    assert hbond_energy(RMIN) == pytest.approx(-EPS, rel=1e-9)
-    # zero slope at the minimum (continuous derivative with the flat inner part)
-    h = 2e-4
-    assert (hbond_energy(RMIN + h) - hbond_energy(RMIN)) / h == pytest.approx(0.0, abs=0.2)
-    # half depth at the same distance as the LJ: 1.227 r_min
-    r_half = RMIN * (1 - 2**-0.5) ** (-1 / 6)
-    assert lj(r_half) == pytest.approx(-EPS / 2, rel=1e-9)
-    assert hbond_energy(r_half) == pytest.approx(-EPS / 2, rel=1e-9)
-    # close to the LJ over the hydrogen-bond range, tail cut beyond
-    for x in (1.1, 1.2, 1.3):
-        assert hbond_energy(x * RMIN) == pytest.approx(lj(x * RMIN), abs=0.1 * EPS)
-    assert lj(1.6 * RMIN) < hbond_energy(1.6 * RMIN) <= 0.0
-    assert abs(hbond_energy(0.45)) < 1e-10
+def test_optimum_is_at_the_measured_geometry():
+    """
+    The well is deepest between r_min and r0 (the radial factor is flat
+    inside r0) and at the two measured angular optima.
+    """
+    best = expected(DEFAULTS.r0, DEFAULTS.donor_theta0, DEFAULTS.acceptor_theta0)
+    assert best == pytest.approx(-EPS)
+    for r in (0.18, 0.19, 0.20):  # the plateau
+        assert expected(r, DEFAULTS.donor_theta0, DEFAULTS.acceptor_theta0) == pytest.approx(best)
+    for r in (0.23, 0.25, 0.30):  # the Gaussian tail
+        assert expected(r, DEFAULTS.donor_theta0, DEFAULTS.acceptor_theta0) > best
+    for theta in (120.0, 135.0, 160.0, 180.0):  # away from the acceptor optimum
+        assert expected(DEFAULTS.r0, DEFAULTS.donor_theta0, theta) > best
+    for theta in (120.0, 135.0, 160.0, 175.0):  # away from the donor optimum
+        assert expected(DEFAULTS.r0, theta, DEFAULTS.acceptor_theta0) > best
 
 
-@pytest.mark.parametrize("theta", [90.0, 60.0])
+def test_acceptor_optimum_is_not_linear():
+    """A linear H...O=C approach is weaker than the lone-pair direction."""
+    linear = expected(DEFAULTS.r0, 180.0, 180.0)
+    lone_pair = expected(DEFAULTS.r0, 180.0, DEFAULTS.acceptor_theta0)
+    assert lone_pair < linear
+    assert lone_pair / linear > 1.5  # and by a sizeable factor
+
+
+def test_alpha_beta_balance():
+    """
+    With the measured optima an alpha hydrogen bond is no longer strongly
+    penalised with respect to a beta one, as it was with cos^2 on both angles.
+    """
+    alpha = angular(152.0, DEFAULTS.donor_theta0, DEFAULTS.donor_width) * angular(
+        142.0, DEFAULTS.acceptor_theta0, DEFAULTS.acceptor_width
+    )
+    beta = angular(158.0, DEFAULTS.donor_theta0, DEFAULTS.donor_width) * angular(
+        152.0, DEFAULTS.acceptor_theta0, DEFAULTS.acceptor_width
+    )
+    old_alpha = np.cos(np.deg2rad(152.0)) ** 2 * np.cos(np.deg2rad(142.0)) ** 2
+    old_beta = np.cos(np.deg2rad(158.0)) ** 2 * np.cos(np.deg2rad(152.0)) ** 2
+    assert beta / alpha < 1.15  # was about 1.4 with cos^2
+    assert beta / alpha < old_beta / old_alpha
+    assert alpha > 1.5 * old_alpha  # and much less of the well is wasted
+
+
+@pytest.mark.parametrize("theta", [89.0, 60.0])
 def test_bent_geometry_has_no_attraction(theta):
-    """A non-hydrogen-bonding N-H...O angle switches the attraction off."""
-    for r in (0.15, RMIN, 0.2, 0.25):
+    """An angle on the wrong side of the atom switches the attraction off."""
+    for r in (0.15, 0.21, 0.25):
         energy = hbond_energy(r, theta_nho=theta)
-        expected = lj(r) + EPS if r < RMIN else 0.0  # only the WCA wall remains
-        assert energy == pytest.approx(expected, rel=1e-9, abs=1e-12)
-
-
-def test_angular_dependence():
-    """Attraction scales as cos^2 of each angle."""
-    r = RMIN
-    for t1, t2 in ((150.0, 180.0), (180.0, 140.0), (160.0, 150.0)):
-        expected = -EPS * np.cos(np.deg2rad(t1)) ** 2 * np.cos(np.deg2rad(t2)) ** 2
-        assert hbond_energy(r, t1, t2) == pytest.approx(expected, rel=1e-9)
+        rmin = (2 * C12 / C6) ** (1 / 6)
+        assert energy == pytest.approx(C12 / r**12 - C6 / r**6 + EPS if r < rmin else 0.0, rel=1e-9, abs=1e-12)
 
 
 def test_repulsive_pair_keeps_repulsion_only():
@@ -109,13 +158,23 @@ def test_repulsive_pair_keeps_repulsion_only():
     c12 = 1e-10
     for r in (0.15, 0.2, 0.3):
         assert hbond_energy(r, c6=0.0, c12=c12) == pytest.approx(c12 / r**12, rel=1e-9)
+        assert expected(r, 180.0, 147.0, c6=0.0, c12=c12) == pytest.approx(c12 / r**12, rel=1e-9)
 
 
 def test_fixed_parameters():
-    """eps, r0 and width can be fixed instead of derived from the LJ pair."""
-    settings = hbond.HBondSettings(epsilon=5.0, r0=0.19, width=0.03)
-    assert hbond_energy(0.19, settings=settings) == pytest.approx(-5.0, rel=1e-9)
-    assert hbond_energy(0.22, settings=settings) == pytest.approx(-5.0 * np.exp(-(0.03**2) / (2 * 0.03**2)), rel=1e-9)
+    """Every parameter of the well can be set explicitly."""
+    settings = hbond.HBondSettings(
+        epsilon=5.0,
+        r0=0.19,
+        width=0.03,
+        donor_theta0=170.0,
+        donor_width=30.0,
+        acceptor_theta0=140.0,
+        acceptor_width=20.0,
+    )
+    assert hbond_energy(0.19, 170.0, 140.0, settings=settings) == pytest.approx(-5.0, rel=1e-9)
+    for r, nho, hoc in ((0.19, 170.0, 140.0), (0.22, 150.0, 155.0), (0.26, 180.0, 120.0)):
+        assert hbond_energy(r, nho, hoc, settings=settings) == pytest.approx(expected(r, nho, hoc, settings), rel=1e-8)
 
 
 def test_settings_json_roundtrip():
@@ -198,15 +257,13 @@ def reference_hbond_energy(params, positions, settings):
             if r >= settings.cutoff:
                 continue
             c6, c12 = c6_table[types[h], types[o]], c12_table[types[h], types[o]]
-            if c6 == 0:
-                pair_energies[(h, o)] = c12 / r**12
-                continue
-            eps, rmin = c6**2 / (4 * c12), (2 * c12 / c6) ** (1 / 6)
-            erep = c12 / r**12 - c6 / r**6 + eps if r < rmin else 0.0
-            w = rmin * hbond.HALF_WIDTH_RATIO
-            cnho, choc = np.cos(angle(n, h, o)), np.cos(angle(h, o, c))
-            ang = (cnho**2 if cnho < 0 else 0.0) * (choc**2 if choc < 0 else 0.0)
-            pair_energies[(h, o)] = erep - eps * np.exp(-max(r - rmin, 0.0) ** 2 / (2 * w**2)) * ang
+            if settings.min_residue_separation > 0:
+                resnum = mol.atoms["resnum"]
+                if abs(int(resnum[h]) - int(resnum[o])) < settings.min_residue_separation:
+                    continue
+            pair_energies[(h, o)] = expected(
+                r, np.degrees(angle(n, h, o)), np.degrees(angle(h, o, c)), settings, c6=c6, c12=c12
+            )
     return sum(pair_energies.values()), pair_energies, len(donors["h"]), len(acceptors["o"])
 
 
@@ -237,19 +294,26 @@ def test_hbond_energy_matches_reference(gb1_hbond):
         return np.degrees(np.arccos(np.dot(u, v) / np.linalg.norm(u) / np.linalg.norm(v)))
 
     eps = 0.2  # mg prior H-O epsilon
-    geometric, other = [], []
+    geometric, other, far = [], [], []
     for (h, o), e in pair_energies.items():
-        is_hbond = (
-            np.linalg.norm(positions[h] - positions[o]) < 0.25
-            and angle(n_of_h[h], h, o) > 120
-            and angle(h, o, c_of_o[o]) > 90
-        )
-        (geometric if is_hbond else other).append(e / eps)
-    geometric, other = np.array(geometric), np.array(other)
+        r = np.linalg.norm(positions[h] - positions[o])
+        theta_nho, theta_hoc = angle(n_of_h[h], h, o), angle(h, o, c_of_o[o])
+        if r < 0.25 and theta_nho > 120 and theta_hoc > 90:
+            geometric.append(e / eps)
+        else:
+            other.append(e / eps)
+            # clearly not a hydrogen bond: far away, or pointing the wrong way
+            if r > 0.30 or theta_nho < 100 or theta_hoc < 100:
+                far.append(e / eps)
+    geometric, other, far = np.array(geometric), np.array(other), np.array(far)
     assert len(geometric) >= 30, f"only {len(geometric)} geometric hydrogen bonds in native GB1"
     assert np.all(geometric <= 0.0)
     assert np.sum(geometric < -0.1) >= 0.75 * len(geometric)
-    assert np.all(other > -0.1), "attraction for a non-hydrogen-bonded donor-acceptor pair"
+    # The potential is smooth while the criterion is a sharp cut, so pairs just
+    # outside it keep some attraction; what must hold is that they are much
+    # weaker on average, and that clearly non-bonded geometries get nothing.
+    assert geometric.mean() < 3 * other.mean()
+    assert np.all(far > -0.02), "attraction for a clearly non-hydrogen-bonded pair"
 
 
 def test_hbond_only_changes_backbone_h_o(gb1_hbond):

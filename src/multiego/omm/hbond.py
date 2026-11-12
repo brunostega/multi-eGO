@@ -10,13 +10,48 @@ backbone carbonyl O (acceptor), by a term that also depends on the geometry:
 
     E = E_rep(r) + E_hb(r, theta_NHO, theta_HOC)
 
-    E_rep = c12/r^12 - c6/r^6 + eps     for r < r_min,   0 otherwise
-    E_hb  = -eps_hb * f(r) * A(theta_NHO) * A(theta_HOC)
-    f(r)  = 1 for r <= r0,  exp(-(r - r0)^2 / (2 w^2)) for r > r0
-    A(theta) = cos(theta)^2  if theta > 90 deg,  0 otherwise
+    E_rep = c12/r^12 - c6/r^6 + eps                       for r < r_min, else 0
+    E_hb  = -eps_hb * f(r) * A_don(theta_NHO) * A_acc(theta_HOC)
+    f(r)      = 1 for r <= r0,  exp(-(r - r0)^2 / (2 w^2)) for r > r0
+    A(theta)  = exp(-(theta - theta_0)^2 / (2 sigma^2))   for theta > 90 deg,
+                0 otherwise
 
 with r the H...O distance, theta_NHO the N-H...O angle and theta_HOC the
-H...O=C angle (both 180 deg for a linear hydrogen bond).  c6 and c12 are the
+H...O=C angle.
+
+Where the angular optima come from
+----------------------------------
+The angular factors are *not* peaked at 180 degrees for both angles.  A
+survey of the backbone hydrogen bonds of the reference structures shipped
+with multi-eGO (tools/helix/hbond_geometry.py; 94 alpha and 29 beta hydrogen
+bonds in GB1, lysozyme and Abeta42) gives:
+
+===========  ==========  =============  =============  ============
+contact      r (A)       N-H...O (deg)  H...O=C (deg)  out of plane
+===========  ==========  =============  =============  ============
+alpha        2.2 +- 0.2  152 +- 10      142 +- 10      31 deg
+beta         2.0 +- 0.1  158 +-  9      152 +- 12      16 deg
+3-10         2.4 +- 0.2  140 +- 14      101 +-  8      76 deg
+===========  ==========  =============  =============  ============
+
+The donor angle is close to linear, as electrostatics require, so
+``A_don`` is centred on 180 degrees and is simply broad enough to cover the
+observed 150-165 range.  The *acceptor* angle is not: the carbonyl lone pairs
+point away from the C=O axis, so an approach along that axis falls between
+them.  ``A_acc`` is therefore centred on 147 degrees, between the alpha and
+beta optima.
+
+This matters beyond the depth of the well.  With ``cos^2`` for both angles --
+i.e. assuming both optima at 180 -- an alpha hydrogen bond retains only
+0.62 x 0.78 = 0.48 of the well while a beta one retains 0.78 x 0.86 = 0.67:
+the term is 40% stronger on beta sheets than on alpha helices, purely as an
+artefact of the functional form.  With the measured optima the two become
+0.76 and 0.84, so most of that bias disappears and, at the same time, far
+less of ``eps_hb`` is wasted.
+
+The 3-10 contacts are rejected by ``A_acc`` (101 degrees is 1.8 sigma away),
+which is the intended behaviour: they are a different, much weaker
+interaction.  c6 and c12 are the
 LJ parameters this H-O pair had in the model (mg prior or learned), from
 which eps = c6^2/(4 c12) and r_min = (2 c12/c6)^(1/6).
 
@@ -64,13 +99,6 @@ from dataclasses import asdict, dataclass
 import numpy as np
 import openmm as mm
 
-# Default Gaussian width, in units of r_min.  The LJ well reaches half its
-# depth (-eps/2) on the outer side at r_half = r_min (1 - 1/sqrt(2))^(-1/6)
-# = 1.227 r_min; a Gaussian of width w reaches half depth at
-# r0 + w sqrt(2 ln 2).  Equating the two gives w = 0.193 r_min, so that the
-# angular well covers the same distance range as the LJ well it replaces.
-HALF_WIDTH_RATIO = float(((1.0 - 2.0**-0.5) ** (-1.0 / 6.0) - 1.0) / np.sqrt(2.0 * np.log(2.0)))
-
 
 @dataclass
 class HBondSettings:
@@ -79,9 +107,13 @@ class HBondSettings:
     LJ parameters of each H-O pair" (see the module docstring).
     """
 
-    epsilon: float = None  # kJ/mol, depth of the angular well
-    r0: float = None  # nm, position of the well
-    width: float = None  # nm, Gaussian width of the well
+    epsilon: float = None  # kJ/mol, depth of the well (None: from the LJ pair)
+    r0: float = 0.21  # nm, position of the well (measured alpha/beta mean)
+    width: float = 0.035  # nm, Gaussian width of the well
+    donor_theta0: float = 180.0  # deg, optimum of the N-H...O angle
+    donor_width: float = 40.0  # deg
+    acceptor_theta0: float = 147.0  # deg, optimum of the H...O=C angle
+    acceptor_width: float = 25.0  # deg
     cutoff: float = 0.5  # nm, H...O cut-off of the term
     # Minimum separation in residues between donor and acceptor.  The default
     # of 3 removes the C5/C7 (gamma-turn) and i->i+2 interactions, which are
@@ -142,8 +174,18 @@ def energy_expression(settings):
     (per-donor parameter ``dtype``, per-acceptor parameter ``atype``).
     """
     eps_hb = "eps" if settings.epsilon is None else repr(float(settings.epsilon))
-    r0 = "rmin" if settings.r0 is None else repr(float(settings.r0))
-    width = f"rmin*{HALF_WIDTH_RATIO!r}" if settings.width is None else repr(float(settings.width))
+    half_pi = repr(float(np.pi / 2.0))
+
+    def angular(name, angle_expression, theta0, sigma):
+        """Gaussian angular factor, zero below 90 degrees (wrong side of the atom)."""
+        # float(): a numpy scalar would print as "np.float64(...)" in the expression
+        theta0 = float(np.deg2rad(float(theta0)))
+        denominator = float(2.0 * np.deg2rad(float(sigma)) ** 2)
+        return [
+            f"{name} = step(t_{name} - {half_pi}) * exp(-(t_{name} - {theta0!r})^2/{denominator!r})",
+            f"t_{name} = {angle_expression}",
+        ]
+
     return ";".join(
         [
             "erep + ehb",
@@ -151,12 +193,10 @@ def energy_expression(settings):
             "erep = select(c6, step(rmin - r)*(c12/r^12 - c6/r^6 + eps), c12/r^12)",
             # the angular attraction exists only for attractive pairs
             # flat for r <= r0, Gaussian beyond (see the module docstring)
-            f"ehb = -select(c6, 1, 0) * {eps_hb} * exp(-max(r - {r0}, 0)^2/(2*w^2)) * aNHO * aHOC",
-            f"w = {width}",
-            "aNHO = step(-cNHO)*cNHO^2",
-            "cNHO = cos(angle(d2, d1, a1))",
-            "aHOC = step(-cHOC)*cHOC^2",
-            "cHOC = cos(angle(d1, a1, a2))",
+            f"ehb = -select(c6, 1, 0) * {eps_hb} * exp(-max(r - {float(settings.r0)!r}, 0)^2"
+            f"/{float(2.0 * float(settings.width) ** 2)!r}) * aNHO * aHOC",
+            *angular("aNHO", "angle(d2, d1, a1)", settings.donor_theta0, settings.donor_width),
+            *angular("aHOC", "angle(d1, a1, a2)", settings.acceptor_theta0, settings.acceptor_width),
             "r = distance(d1, a1)",
             # LJ well of this pair; the max() avoid 0/0 when c6 = 0 (unused then)
             "eps = c6^2/(4*max(c12, 1e-30))",

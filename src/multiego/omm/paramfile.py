@@ -354,12 +354,20 @@ def from_generation(meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, attr
     if getattr(parameters, "hbond", False):
         from multiego.omm.hbond import HBondSettings
 
-        file_attrs["hbond"] = HBondSettings(
-            epsilon=parameters.hbond_epsilon,
-            r0=parameters.hbond_r0,
-            width=parameters.hbond_width,
-            cutoff=parameters.hbond_cutoff,
-        ).to_json()
+        # Only the options the user actually set override the defaults of
+        # HBondSettings (which come from the measured hydrogen-bond geometry).
+        overrides = {
+            "epsilon": parameters.hbond_epsilon,  # None keeps "take it from the LJ pair"
+            "r0": parameters.hbond_r0,
+            "width": parameters.hbond_width,
+            "donor_theta0": parameters.hbond_donor_theta0,
+            "donor_width": parameters.hbond_donor_width,
+            "acceptor_theta0": parameters.hbond_acceptor_theta0,
+            "acceptor_width": parameters.hbond_acceptor_width,
+            "cutoff": parameters.hbond_cutoff,
+        }
+        settings = {k: v for k, v in overrides.items() if v is not None or k == "epsilon"}
+        file_attrs["hbond"] = HBondSettings(**settings).to_json()
     file_attrs.update(attrs or {})
     cmap = cmap_from_maps(molecules, cmap_maps) if cmap_maps else None
     return MegoParameters(molecules, nonbonded, file_attrs, cmap)

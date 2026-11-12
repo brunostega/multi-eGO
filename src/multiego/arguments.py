@@ -85,12 +85,33 @@ _args_dict_shared = {
     "--hbond_r0": {
         "default": None,
         "type": float,
-        "help": "Position of the hydrogen-bond well (nm). Default: the LJ minimum of each H-O pair.",
+        "help": "Position of the hydrogen-bond well (nm). Default: 0.21, the measured H...O distance.",
     },
     "--hbond_width": {
         "default": None,
         "type": float,
-        "help": "Gaussian width of the hydrogen-bond well (nm). Default: 0.193 r_min, the half-depth width of the LJ well.",
+        "help": "Gaussian width of the hydrogen-bond well (nm). Default: 0.035.",
+    },
+    "--hbond_donor_theta0": {
+        "default": None,
+        "type": float,
+        "help": "Optimum of the N-H...O angle (degrees). Default: 180, as electrostatics require.",
+    },
+    "--hbond_donor_width": {
+        "default": None,
+        "type": float,
+        "help": "Gaussian width of the N-H...O angular factor (degrees). Default: 40.",
+    },
+    "--hbond_acceptor_theta0": {
+        "default": None,
+        "type": float,
+        "help": "Optimum of the H...O=C angle (degrees). Default: 147, the measured lone-pair direction "
+        "(NOT 180: an approach along the C=O axis falls between the carbonyl lone pairs).",
+    },
+    "--hbond_acceptor_width": {
+        "default": None,
+        "type": float,
+        "help": "Gaussian width of the H...O=C angular factor (degrees). Default: 25.",
     },
     "--hbond_cutoff": {
         "default": 0.5,
