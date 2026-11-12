@@ -58,7 +58,8 @@ def atom_index(gro_file):
     """(residue number, atom name) -> atom index, from a GROMACS .gro file."""
     with open(gro_file) as handle:
         lines = handle.read().splitlines()
-    return {(int(line[0:5]), line[10:15].strip()): k for k, line in enumerate(lines[2 : 2 + int(lines[1])])}  # noqa: E203
+    last = 2 + int(lines[1])
+    return {(int(line[0:5]), line[10:15].strip()): k for k, line in enumerate(lines[2:last])}
 
 
 def dihedral(p0, p1, p2, p3):
@@ -167,6 +168,79 @@ def lifson_roig(alpha):
         key=lambda result: result.fun,
     )
     return float(np.exp(best.x[0])), float(np.exp(best.x[1])), float(np.abs(best.jac).max())
+
+
+def conditional_lifson_roig(alpha):
+    """
+    Lifson-Roig fit that does not rely on sampling the helix-coil
+    *transition*, and the equilibrium helicity it implies.
+
+    With a realistic nucleation barrier a simulation equilibrates quickly
+    *within* the helical state (helices fray and regrow at their ends) and
+    within the coil state, but crosses between them rarely, so the sampled
+    proportion of the two states -- hence the plain fit of
+    :func:`lifson_roig` and the sampled helicity -- depends on how the run was
+    started.  The distribution *inside* each state is still Boltzmann, though:
+
+    * frames with at least one hydrogen-bonded residue (n_w >= 1) follow the
+      Lifson-Roig weights restricted to those configurations;
+    * frames with none (n_w = 0) follow the weights restricted to the rest.
+
+    Maximising the sum of the two conditional likelihoods gives w and v
+    without using the relative population of the two states; the full
+    partition function then predicts that population, and the helicity.  The
+    price is the assumption that the Lifson-Roig model (one w and one v for
+    all residues) describes the peptide.
+
+    Returns a dict with ``w``, ``v``, the predicted fraction of residues in
+    helical segments (``helix``), of hydrogen-bonded residues (``bonded``)
+    and the probability that a helix is present (``p_helix``), plus the
+    number of frames in each state.
+    """
+    n = alpha.shape[1]
+    configurations = np.array(list(itertools.product([0, 1], repeat=n)), dtype=bool)
+    padded = np.pad(configurations, ((0, 0), (1, 1)))
+    n_w = (configurations & padded[:, :-2] & padded[:, 2:]).sum(axis=1).astype(float)
+    n_v = configurations.sum(axis=1) - n_w
+    in_segment = segments(configurations).sum(axis=1)
+    helical = n_w >= 1
+
+    observed = np.pad(alpha, ((0, 0), (1, 1)))
+    w_counts = (alpha & observed[:, :-2] & observed[:, 2:]).sum(axis=1)
+    v_counts = alpha.sum(axis=1) - w_counts
+    has_helix = w_counts >= 1
+    groups = [(has_helix, helical), (~has_helix, ~helical)]
+
+    def negative_log_likelihood(x):
+        total = 0.0
+        for frames, subset in groups:
+            if not frames.any():
+                continue
+            exponent = n_w[subset] * x[0] + n_v[subset] * x[1]
+            shift = exponent.max()
+            log_partition = shift + np.log(np.exp(exponent - shift).sum())
+            total -= (w_counts[frames] * x[0] + v_counts[frames] * x[1]).sum() - frames.sum() * log_partition
+        return total / len(alpha)
+
+    best = min(
+        (
+            minimize(negative_log_likelihood, x0, method="Nelder-Mead", options={"xatol": 1e-5, "fatol": 1e-10})
+            for x0 in ([0.0, -2.0], [0.5, -2.5])
+        ),
+        key=lambda result: result.fun,
+    )
+    log_weights = n_w * best.x[0] + n_v * best.x[1]
+    weights = np.exp(log_weights - log_weights.max())
+    weights /= weights.sum()
+    return {
+        "w": float(np.exp(best.x[0])),
+        "v": float(np.exp(best.x[1])),
+        "helix": float((weights * in_segment).sum() / n),
+        "bonded": float((weights * n_w).sum() / n),
+        "p_helix": float(weights[helical].sum()),
+        "frames_helix": int(has_helix.sum()),
+        "frames_coil": int((~has_helix).sum()),
+    }
 
 
 def block_error(series, blocks=5):

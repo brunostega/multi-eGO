@@ -60,7 +60,8 @@ def read_structure(path):
         with open(path) as handle:
             lines = handle.read().splitlines()
         chain, previous = 0, None
-        for line in lines[2 : 2 + int(lines[1])]:
+        last = 2 + int(lines[1])
+        for line in lines[2:last]:
             resnum = int(line[0:5])
             if previous is not None and resnum < previous:
                 chain += 1

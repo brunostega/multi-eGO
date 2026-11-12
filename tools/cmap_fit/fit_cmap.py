@@ -103,6 +103,9 @@ def main():
     parser.add_argument("--interval", type=int, default=100, help="steps between stored frames")
     parser.add_argument("--damping", type=float, default=1.0)
     parser.add_argument(
+        "--max-step", type=float, default=5.0, help="largest change of a cell in one iteration (kJ/mol)"
+    )
+    parser.add_argument(
         "--average",
         type=int,
         default=4,
@@ -143,7 +146,7 @@ def main():
         # the *current* map: this is the quantity that must go to zero.
         overlap = float(np.minimum(sampled, target).sum())
         history.append({"overlap": overlap, **populations, "j": cmap.mean_j(sampled)})
-        grid, rms = cmap.update(grid, sampled, target, args.temperature, damping=args.damping)
+        grid, rms = cmap.update(grid, sampled, target, args.temperature, damping=args.damping, max_step=args.max_step)
         maps.append(grid)
         print(
             f"  iter {iteration}: "
