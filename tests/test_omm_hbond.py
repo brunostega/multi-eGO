@@ -257,10 +257,11 @@ def reference_hbond_energy(params, positions, settings):
             if r >= settings.cutoff:
                 continue
             c6, c12 = c6_table[types[h], types[o]], c12_table[types[h], types[o]]
-            if settings.min_residue_separation > 0:
-                resnum = mol.atoms["resnum"]
-                if abs(int(resnum[h]) - int(resnum[o])) < settings.min_residue_separation:
-                    continue
+            resnum = mol.atoms["resnum"]
+            if abs(int(resnum[h]) - int(resnum[o])) < settings.min_residue_separation:
+                # local pair: keeps the plain Lennard-Jones it had before
+                pair_energies[(h, o)] = c12 / r**12 - c6 / r**6
+                continue
             pair_energies[(h, o)] = expected(
                 r, np.degrees(angle(n, h, o)), np.degrees(angle(h, o, c)), settings, c6=c6, c12=c12
             )
@@ -295,7 +296,10 @@ def test_hbond_energy_matches_reference(gb1_hbond):
 
     eps = 0.2  # mg prior H-O epsilon
     geometric, other, far = [], [], []
+    resnum = mol.atoms["resnum"].astype(int)
     for (h, o), e in pair_energies.items():
+        if abs(resnum[h] - resnum[o]) < params.hbond.min_residue_separation:
+            continue  # local pairs keep plain LJ: not governed by the geometry
         r = np.linalg.norm(positions[h] - positions[o])
         theta_nho, theta_hoc = angle(n_of_h[h], h, o), angle(h, o, c_of_o[o])
         if r < 0.25 and theta_nho > 120 and theta_hoc > 90:
@@ -381,3 +385,45 @@ def test_hbond_forces_are_energy_gradient(gb1_hbond):
             xm[atom, dim] -= delta
             numerical = -(state(xp)[0] - state(xm)[0]) / (2 * delta)
             assert forces[atom, dim] == pytest.approx(numerical, rel=1e-4, abs=1e-5)
+
+
+def test_exclusions_fit_gpu_limit(gb1_hbond):
+    """
+    GPU platforms of OpenMM accept at most 4 exclusions per donor in a
+    CustomHbondForce.  The residue-separation rule must therefore not be
+    implemented with exclusions; only bonded exclusions remain.
+    """
+    params, _, box = gb1_hbond
+    for copies in (1, 3):
+        system = builder.create_system(params, molecules=[("GB1", copies)], box_vectors=box)
+        force = next(f for f in system.getForces() if f.getName() == "hbonds")
+        per_donor = np.zeros(force.getNumDonors(), dtype=int)
+        for e in range(force.getNumExclusions()):
+            per_donor[force.getExclusionParticles(e)[0]] += 1
+        assert per_donor.max() <= 4, f"{per_donor.max()} exclusions on one donor with {copies} copies"
+
+
+def test_local_pairs_keep_lennard_jones(gb1_hbond):
+    """
+    Donor-acceptor pairs closer than min_residue_separation along the chain,
+    and not bond-excluded, keep exactly the LJ interaction they have without
+    the term.  (Regression: their LJ table entry is zeroed by the term and
+    they used to be excluded from it as well, so they had no interaction.)
+    """
+    params, positions, box = gb1_hbond
+    mol = next(iter(params.molecules.values()))
+    donors, acceptors = hbond.find_donors_acceptors(mol.atoms)
+    resnum = mol.atoms["resnum"].astype(int)
+    _, pair_energies, _, _ = reference_hbond_energy(params, positions, params.hbond)
+    local = [(h, o) for (h, o) in pair_energies if abs(resnum[h] - resnum[o]) < params.hbond.min_residue_separation]
+    assert len(local) > 0, "GB1 must have local, non-excluded donor-acceptor pairs"
+    c6_table, c12_table = params.nonbonded.dense_tables()
+    types = mol.atoms["nb_type"]
+    for h, o in local:
+        r = np.linalg.norm(positions[h] - positions[o])
+        c6, c12 = c6_table[types[h], types[o]], c12_table[types[h], types[o]]
+        assert pair_energies[(h, o)] == pytest.approx(c12 / r**12 - c6 / r**6)
+    # and the OpenMM force agrees with the reference including them
+    system = builder.create_system(params, box_vectors=box)
+    total, _, _, _ = reference_hbond_energy(params, positions, params.hbond)
+    assert energy.decompose(system, positions)["hbonds"]["energy"] == pytest.approx(total, rel=1e-8)

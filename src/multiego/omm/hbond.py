@@ -186,9 +186,16 @@ def energy_expression(settings):
             f"t_{name} = {angle_expression}",
         ]
 
+    # Pairs closer than min_residue_separation along a chain keep the plain
+    # Lennard-Jones interaction they had before the term replaced it (the LJ
+    # table entry of every donor-acceptor pair is zeroed, see add_hbond_force).
+    # The rule is applied here, through the per-donor/per-acceptor residue
+    # index, rather than with exclusions: GPU platforms accept at most four
+    # exclusions per donor.
+    local = f"step({float(settings.min_residue_separation) - 0.5!r} - abs(dres - ares))"
     return ";".join(
         [
-            "erep + ehb",
+            f"select({local}, c12/r^12 - c6/r^6, erep + ehb)",
             # attractive LJ (c6 > 0): WCA repulsion; repulsive LJ: plain c12/r^12
             "erep = select(c6, step(rmin - r)*(c12/r^12 - c6/r^6 + eps), c12/r^12)",
             # the angular attraction exists only for attractive pairs
@@ -224,8 +231,11 @@ def add_hbond_force(system, settings, c6_table, c12_table, donors, acceptors, ex
     excluded_pairs : set of (i, j)
         Particle pairs excluded from the nonbonded force (i < j).
     residue_of_atom : dict, optional
-        Particle index -> (molecule copy, residue number).  Used to apply
-        ``settings.min_residue_separation``; without it that rule is skipped.
+        Particle index -> global residue index.  Indices must be consecutive
+        along a chain and differ by at least ``min_residue_separation``
+        between different molecule copies (the builder leaves a gap).  Used
+        to apply ``settings.min_residue_separation``; without it the rule is
+        not applied.
 
     Returns
     -------
@@ -243,7 +253,9 @@ def add_hbond_force(system, settings, c6_table, c12_table, donors, acceptors, ex
     force = mm.CustomHbondForce(energy_expression(settings))
     force.setName("hbonds")
     force.addPerDonorParameter("dtype")
+    force.addPerDonorParameter("dres")
     force.addPerAcceptorParameter("atype")
+    force.addPerAcceptorParameter("ares")
     nd, na = len(d_types), len(a_types)
     # Discrete2DFunction: first index (donor type) varies fastest.
     force.addTabulatedFunction("c6hb", mm.Discrete2DFunction(nd, na, sub_c6.ravel(order="F")))
@@ -251,26 +263,34 @@ def add_hbond_force(system, settings, c6_table, c12_table, donors, acceptors, ex
     force.setNonbondedMethod(mm.CustomHbondForce.CutoffPeriodic)
     force.setCutoffDistance(settings.cutoff)
 
+    # Without residue information no pair is "local": give donors and
+    # acceptors residue indices that are always far apart.
+    if residue_of_atom is None:
+        donor_residue, acceptor_residue = (lambda atom: 0.0), (lambda atom: 1.0e6)
+    else:
+        donor_residue = acceptor_residue = lambda atom: float(residue_of_atom[atom])
+
     donor_of_h = {}
     for h, n, t in donors:
-        donor_of_h[h] = force.addDonor(h, n, -1, [float(d_index[t])])
+        donor_of_h[h] = force.addDonor(h, n, -1, [float(d_index[t]), donor_residue(h)])
     acceptor_of_o = {}
     for o, c, t in acceptors:
-        acceptor_of_o[o] = force.addAcceptor(o, c, -1, [float(a_index[t])])
+        acceptor_of_o[o] = force.addAcceptor(o, c, -1, [float(a_index[t]), acceptor_residue(o)])
+    # Only pairs excluded from the non-bonded force are excluded here (they are
+    # described by the bonded terms and [ pairs ]).  For backbone H and O
+    # these are within one residue, so there are at most a couple per donor:
+    # well within the limit of four exclusions per donor of the GPU platforms.
     exclusions = set()
     for i, j in excluded_pairs:
         if i in donor_of_h and j in acceptor_of_o:
             exclusions.add((donor_of_h[i], acceptor_of_o[j]))
         elif j in donor_of_h and i in acceptor_of_o:
             exclusions.add((donor_of_h[j], acceptor_of_o[i]))
-    # Donor and acceptor too close along the same chain (see HBondSettings).
-    if residue_of_atom is not None and settings.min_residue_separation > 0:
-        for h, _, _ in donors:
-            chain_h, res_h = residue_of_atom[h]
-            for o, _, _ in acceptors:
-                chain_o, res_o = residue_of_atom[o]
-                if chain_h == chain_o and abs(res_h - res_o) < settings.min_residue_separation:
-                    exclusions.add((donor_of_h[h], acceptor_of_o[o]))
+    per_donor = np.bincount([d for d, _ in exclusions], minlength=len(donor_of_h)) if exclusions else [0]
+    if max(per_donor) > 4:
+        raise ValueError(
+            f"a hydrogen-bond donor has {max(per_donor)} exclusions; GPU platforms of OpenMM accept at most 4"
+        )
     for d, a in sorted(exclusions):
         force.addExclusion(d, a)
 
