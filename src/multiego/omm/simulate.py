@@ -170,6 +170,10 @@ def run(args):
     platform = [mm.Platform.getPlatformByName(args.platform)] if args.platform else []
     simulation = app.Simulation(topology, system, integrator, *platform)
     print(f"Platform: {simulation.context.getPlatform().getName()}, {system.getNumParticles()} atoms")
+    print("Forces:", ", ".join(f.getName() for f in system.getForces()))
+    from multiego.omm.inspect import describe
+
+    describe(params)
 
     if args.restart:
         # Positions, velocities, box and step counter from the checkpoint.
