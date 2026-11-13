@@ -148,7 +148,16 @@ def smooth(grid, sigma_bins):
 
 
 def update(
-    current, sampled, target, temperature, damping=1.0, max_step=5.0, max_total=30.0, sigma_bins=1.0, floor=1e-6
+    current,
+    sampled,
+    target,
+    temperature,
+    n_samples,
+    damping=1.0,
+    max_step=5.0,
+    max_total=30.0,
+    sigma_bins=1.0,
+    pseudo_count=1.0,
 ):
     """
     One iterative-Boltzmann-inversion update of a CMAP.
@@ -173,9 +182,21 @@ def update(
     sigma_bins : float
         Width (in bins) of the Gaussian smoothing applied to both maps before
         taking their ratio, and to the correction itself.
-    floor : float
-        Probability added to both maps before the ratio, as a fraction of a
-        uniform distribution; keeps empty cells finite.
+    n_samples : int
+        Number of frames behind ``sampled``.  It sets the statistical
+        resolution of the comparison (see ``pseudo_count``).
+    pseudo_count : float
+        Frames added to every cell of *both* maps before taking their ratio
+        (the target being scaled to ``n_samples`` frames).  This is essential,
+        not cosmetic.  A run of N frames cannot tell a population of 0 from
+        one of ~1/N, so a cell where the target expects less than one frame
+        and the simulation has none carries no information.  Without the
+        pseudo-count the logarithm of the ratio there is large and negative,
+        the cell is lowered at every iteration, and after a few iterations
+        the map has dug a well deeper than the steric barrier that kept the
+        region empty: the molecule then falls into it in bulk and the fit
+        oscillates or diverges.  (Observed on threonine: a collapse into
+        phi = +60 every third iteration.)
 
     Returns
     -------
@@ -183,12 +204,11 @@ def update(
     rms_change : float
         RMS of the applied correction (kJ/mol), a convergence indicator.
     """
-    size = current.shape[0]
-    uniform = 1.0 / size**2
     # Fourier smoothing of a sharply peaked map can produce slightly negative
-    # cells: clip them before taking the logarithm.
-    p_sim = np.maximum(smooth(sampled, sigma_bins), 0.0) + floor * uniform
-    p_tgt = np.maximum(smooth(target, sigma_bins), 0.0) + floor * uniform
+    # cells: clip them.  The pseudo-count is expressed as a probability.
+    floor = pseudo_count / float(n_samples)
+    p_sim = np.maximum(smooth(sampled, sigma_bins), 0.0) + floor
+    p_tgt = np.maximum(smooth(target, sigma_bins), 0.0) + floor
     p_sim /= p_sim.sum()
     p_tgt /= p_tgt.sum()
 

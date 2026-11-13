@@ -108,7 +108,7 @@ def test_update_moves_towards_target():
     target /= target.sum()
     sampled = np.exp(-np.cos(angles)[:, None] + 0.0 * angles[None, :])
     sampled /= sampled.sum()
-    new, rms = cmap.update(np.zeros((size, size)), sampled, target, 300.0)
+    new, rms = cmap.update(np.zeros((size, size)), sampled, target, 300.0, n_samples=100000)
     assert rms > 0.0
     # the correction must be lower where the target wants more population
     assert new[np.argmax(target.sum(axis=1))].mean() < new[np.argmin(target.sum(axis=1))].mean()
@@ -147,3 +147,23 @@ def test_single_molecule_system_is_equivalent():
     for _ in range(4):
         x = x0 + rng.normal(0.0, 0.05, x0.shape)
         assert not energy.compare(energy.decompose(standard, x), energy.decompose(fast, x))
+
+
+def test_update_ignores_cells_below_the_sampling_resolution():
+    """
+    A cell where the target expects less than one frame and the simulation
+    has none must not be lowered: doing so digs artificial wells that
+    eventually capture the molecule (the failure seen on threonine).
+    """
+    size, frames = 36, 10000
+    target = np.zeros((size, size))
+    target[10, 30] = 0.99999  # the real basin
+    target[25, 20] = 0.00001  # 0.1 expected frames: below the resolution
+    sampled = np.zeros((size, size))
+    sampled[10, 30] = 1.0
+    new, _ = cmap.update(np.zeros((size, size)), sampled, target, 300.0, n_samples=frames, sigma_bins=0.0)
+    assert abs(new[25, 20] - new[0, 0]) < 0.3  # same as a cell empty in both maps
+    # ... while a cell the target clearly populates (100 expected frames) is lowered
+    target[25, 20], target[10, 30] = 0.01, 0.99
+    new, _ = cmap.update(np.zeros((size, size)), sampled, target, 300.0, n_samples=frames, sigma_bins=0.0)
+    assert new[25, 20] < new[0, 0] - 4.0

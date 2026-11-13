@@ -146,7 +146,9 @@ def main():
         # the *current* map: this is the quantity that must go to zero.
         overlap = float(np.minimum(sampled, target).sum())
         history.append({"overlap": overlap, **populations, "j": cmap.mean_j(sampled)})
-        grid, rms = cmap.update(grid, sampled, target, args.temperature, damping=args.damping, max_step=args.max_step)
+        grid, rms = cmap.update(
+            grid, sampled, target, args.temperature, len(phi), damping=args.damping, max_step=args.max_step
+        )
         maps.append(grid)
         print(
             f"  iter {iteration}: "
@@ -158,7 +160,8 @@ def main():
     # Average the converged maps, then remove the artificial wells left in
     # never-sampled regions, and run once more to report what it produces.
     if args.average > 1:
-        grid = np.mean(maps[-args.average :], axis=0)
+        first = len(maps) - args.average
+        grid = np.mean(maps[first:], axis=0)
     grid = cmap.flatten_unpopulated(grid, target)
 
     # One last run with the final map, to report what it actually produces.
