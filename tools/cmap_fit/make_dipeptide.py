@@ -44,7 +44,7 @@ def build(resname, outdir, gmx="gmx"):
     # "2\n2\n": no terminal patch at either end (the caps are residues)
     subprocess.run(
         [gmx, "pdb2gmx", "-f", pdb, "-o", f"{outdir}/{resname}.gro", "-p", f"{outdir}/topol.top",
-         "-ff", "multi-ego-basic", "-water", "none", "-ignh", "-ter"],
+         "-i", f"{outdir}/posre.itp", "-ff", "multi-ego-basic", "-water", "none", "-ignh", "-ter"],
         input="2\n2\n", text=True, check=True, capture_output=True,
     )  # fmt: skip
     subprocess.run(
