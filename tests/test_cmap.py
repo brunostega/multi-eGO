@@ -167,3 +167,19 @@ def test_update_ignores_cells_below_the_sampling_resolution():
     target[25, 20], target[10, 30] = 0.01, 0.99
     new, _ = cmap.update(np.zeros((size, size)), sampled, target, 300.0, n_samples=frames, sigma_bins=0.0)
     assert new[25, 20] < new[0, 0] - 4.0
+
+
+def test_d_amino_acid_map_is_the_mirror_image():
+    """U_D(phi, psi) == U_L(-phi, -psi) on every grid node."""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "tools", "cmap_fit"))
+    from derive_variants import mirror
+
+    size = 36
+    angles = cmap.grid_angles(size)
+    rng = np.random.default_rng(4)
+    grid = rng.random((size, size))
+    d = mirror(grid)
+    index = {round(a) % 360: i for i, a in enumerate(angles)}
+    for i, phi in enumerate(angles):
+        for j, psi in enumerate(angles):
+            assert d[i, j] == grid[index[round(-phi) % 360], index[round(-psi) % 360]]
