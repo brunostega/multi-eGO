@@ -300,7 +300,7 @@ def flatten_unpopulated(grid, target, threshold=1e-4):
     return flattened
 
 
-def flattening_bias(target, temperature, cap=12.0, sigma_bins=1.0):
+def flattening_bias(target, temperature, cap=12.0, sigma_bins=1.0, smooth_bias_bins=1.5):
     """
     Bias map that flattens the target landscape, for sampling rare regions.
 
@@ -321,7 +321,15 @@ def flattening_bias(target, temperature, cap=12.0, sigma_bins=1.0):
     """
     p = np.maximum(smooth(target, sigma_bins), 0.0)
     p = p / p.max()
-    return np.clip(KB * temperature * np.log(np.maximum(p, 1e-30)), -cap, 0.0)
+    bias = np.clip(KB * temperature * np.log(np.maximum(p, 1e-30)), -cap, 0.0)
+    # Smooth the clipped map as well: the clip creates edges where the bias
+    # changes by the full cap over one grid cell, and such steep torques make
+    # the integration unstable for deep caps (NaN at cap = 25 kJ/mol with a
+    # 5 fs time step).  Re-zero the maximum afterwards.
+    if smooth_bias_bins > 0:
+        bias = smooth(bias, smooth_bias_bins)
+        bias -= bias.max()
+    return bias
 
 
 def bias_weights(phi, psi, bias, temperature):

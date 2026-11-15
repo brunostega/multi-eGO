@@ -201,7 +201,7 @@ def test_flattening_bias_and_reweighting_recover_the_distribution():
         -((phi_grid - 60) ** 2 + (psi_grid - 40) ** 2) / 300.0
     )  # a main basin and a rare "alphaL" one
     target /= target.sum()
-    bias = cmap.flattening_bias(target, temperature, cap=12.0, sigma_bins=0.0)
+    bias = cmap.flattening_bias(target, temperature, cap=12.0, sigma_bins=0.0, smooth_bias_bins=0.0)
     assert bias.max() == pytest.approx(0.0) and bias.min() >= -12.0
     biased = target * np.exp(-bias / (cmap.KB * temperature))
     biased /= biased.sum()
@@ -214,3 +214,14 @@ def test_flattening_bias_and_reweighting_recover_the_distribution():
     assert recovered[rare].sum() == pytest.approx(target[rare].sum(), rel=0.1)
     # and the rare region is sampled far more often than without the bias
     assert biased[rare].sum() > 20 * target[rare].sum()
+
+
+def test_flattening_bias_has_no_steep_edges():
+    """The default bias is smoothed: neighbouring cells differ by far less than the cap."""
+    size = 36
+    angles = np.deg2rad(cmap.grid_angles(size))
+    target = np.exp(5 * np.cos(angles)[:, None] * np.cos(angles)[None, :])
+    target /= target.sum()
+    bias = cmap.flattening_bias(target, 300.0, cap=25.0)
+    steps = max(np.abs(np.diff(bias, axis=0)).max(), np.abs(np.diff(bias, axis=1)).max())
+    assert steps < 0.4 * 25.0

@@ -122,6 +122,12 @@ def main():
         f"alphaL (reweighted {args.flat_ns:.0f} ns): population {100 * biased['alphaL']:.2f}% (target {100 * reference['alphaL']:.2f}%), "
         f"dG(aL-aR) {g_model:.2f} +- {se_g:.2f} vs {g_target:.2f} kJ/mol  {'PASS' if ok else 'FAIL'}"
     )
+    # Number of separate visits to alphaL (phi > 0) that last at least 5 ps:
+    # sets the real statistical resolution of the alphaL estimate.
+    inside = phi_b > 0
+    entries = np.flatnonzero(inside[1:] & ~inside[:-1]) + 1
+    lasting = sum(1 for e in entries if inside[e : e + 10].all())  # noqa: E203
+    print(f"visits to phi > 0 lasting >= 5 ps in the reweighted run: {lasting}")
     print("cross-check, reweighted run: " + "  ".join(f"{b} {100 * biased[b]:.1f}" for b in BASINS))
     print("OVERALL:", "PASS" if verdict else "FAIL")
 

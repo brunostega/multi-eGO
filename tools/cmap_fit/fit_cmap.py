@@ -91,6 +91,10 @@ def sample(params, positions, box, grid, temperature, nsteps, interval, seed, pl
         integrator.step(interval)
         frames.append(context.getState(getPositions=True).getPositions(asNumpy=True)._value)
     frames = np.array(frames)
+    if not np.all(np.isfinite(frames)):
+        # Never update a map from an unstable run: NaN angles would be binned
+        # into arbitrary cells and corrupt the map.
+        raise RuntimeError("non-finite coordinates in the sampling run (unstable integration); map not updated")
     phi = dihedrals(frames, *atoms[:4])
     psi = dihedrals(frames, *atoms[1:])
     return phi, psi, frames[-1]
