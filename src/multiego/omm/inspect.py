@@ -44,6 +44,11 @@ def describe(params, molecules=None):
         print("HYDROGEN BOND: NOT in this model (generate with --hbond)")
     else:
         depth = "from each H-O LJ pair" if settings.epsilon is None else f"{settings.epsilon} kJ/mol"
+        nonlocal_depth = depth if settings.epsilon_nonlocal is None else f"{settings.epsilon_nonlocal} kJ/mol"
+        depth = (
+            f"{depth} local (|dres| {settings.min_residue_separation}-{settings.nonlocal_separation - 1}), "
+            f"{nonlocal_depth} non-local (|dres| >= {settings.nonlocal_separation} or between chains)"
+        )
         print(
             f"HYDROGEN BOND: present, epsilon {depth}, r0 {settings.r0} nm, N-H...O {settings.donor_theta0} deg, "
             f"H...O=C {settings.acceptor_theta0} deg, min residue separation {settings.min_residue_separation}"

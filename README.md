@@ -205,7 +205,9 @@ Adding `--hbond` when generating the force field replaces, in OpenMM simulations
 attraction between backbone amide H and carbonyl O by a term that also depends on the N–H···O and H···O=C angles.
 For a linear hydrogen bond the term reproduces the original Lennard-Jones well (same depth and position, the
 repulsive wall is unchanged); it vanishes for non-hydrogen-bonding orientations. Depth, position and width can be
-fixed with `--hbond_epsilon`, `--hbond_r0` and `--hbond_width`; see `src/multiego/omm/hbond.py` for the functional
+fixed with `--hbond_epsilon`, `--hbond_r0` and `--hbond_width`. Non-local bonds (donor and acceptor at least five residues
+apart, or on different chains: β-sheets, tertiary and intermolecular contacts) can be given a different depth with
+`--hbond_epsilon_nonlocal`; by default they use the same depth as the local ones (helices, turns). See `src/multiego/omm/hbond.py` for the functional
 form. The GROMACS files are not affected by this option.
 
 #### Running with GROMACS

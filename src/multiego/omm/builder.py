@@ -220,9 +220,10 @@ def create_system(
 
     hbond_settings = params.hbond if hbond is None else (hbond or None)
     donors, acceptors, all_exclusions, residue_of_atom = [], [], set(), {}
-    # Global residue index for the hydrogen-bond residue-separation rule:
+    # Global residue index for the hydrogen-bond residue-separation rules:
     # consecutive along a chain, with a gap between molecule copies so that
-    # residues of different copies are never "close".
+    # residues of different copies are never "close" and their bonds are
+    # always non-local.
     residue_base = 0
 
     # Optional backbone CMAP: one map per residue type, applied to the
@@ -291,7 +292,8 @@ def create_system(
                 resnums = mol.atoms["resnum"].astype(int)
                 for k in range(mol.n_atoms):
                     residue_of_atom[offset + k] = residue_base + int(resnums[k]) - int(resnums.min())
-                residue_base += int(resnums.max() - resnums.min()) + 1 + hbond_settings.min_residue_separation
+                gap = max(hbond_settings.min_residue_separation, hbond_settings.nonlocal_separation)
+                residue_base += int(resnums.max() - resnums.min()) + 1 + gap
                 donors += [(offset + h, offset + n, int(types[h])) for h, n in zip(mol_donors["h"], mol_donors["n"])]
                 acceptors += [
                     (offset + o, offset + c, int(types[o])) for o, c in zip(mol_acceptors["o"], mol_acceptors["c"])

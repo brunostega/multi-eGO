@@ -73,6 +73,25 @@ which eps = c6^2/(4 c12) and r_min = (2 c12/c6)^(1/6).
 * A pair whose LJ is purely repulsive (c6 = 0) keeps its c12/r^12 repulsion
   and gets no attraction.
 
+Local and non-local bonds
+-------------------------
+The depth of the well can differ between *local* bonds (donor and acceptor
+3-4 residues apart: alpha and 3-10 helices, turns) and *non-local* ones
+(5 or more residues apart, or on different chains: beta sheets, tertiary and
+intermolecular contacts), through ``HBondSettings.epsilon_nonlocal``.
+
+Why: with a single depth calibrated on helices, the model forms far too much
+beta structure.  Per formed bond the two kinds of contact get the same
+energy (the angular factors treat them alike, ~0.8 of the well), but they
+cost the chain very different amounts of order.  A helix must fix one
+residue in the narrow helical region per bond (~8.3 kJ/mol of local free
+energy, from the experimental coil distributions reproduced by the CMAP; the
+same as -RT ln v with v = 0.036); non-local pairing between extended segments
+costs ~2 kJ/mol per fixed residue.  Real chains additionally charge non-local
+bonds for things this model lacks (competition with water, backbone
+desolvation, loop entropy, register) and reinforce helical bonds through
+cooperative polarization.  A weaker non-local depth stands in for both.
+
 Which pairs
 -----------
 Donors are the backbone amide hydrogens (atom name ``H``, with the ``N`` of
@@ -122,6 +141,15 @@ class HBondSettings:
     # local conformational preference and the hydrogen-bond term independent,
     # so that they can be calibrated separately.
     min_residue_separation: int = 3
+    # Depth of the well for NON-LOCAL hydrogen bonds: donor and acceptor at
+    # least nonlocal_separation residues apart along the same chain, or on
+    # different chains (beta sheets, tertiary and intermolecular contacts).
+    # None: the same depth as the local bonds (``epsilon``).  Local bonds are
+    # those between min_residue_separation and nonlocal_separation - 1
+    # residues apart: with the defaults, i->i+3 (3-10, turns) and i->i+4
+    # (alpha).  See the module docstring ("Local and non-local bonds").
+    epsilon_nonlocal: float = None  # kJ/mol
+    nonlocal_separation: int = 5
 
     def to_json(self):
         return json.dumps(asdict(self))
@@ -173,7 +201,12 @@ def energy_expression(settings):
     ``c6hb``/``c12hb`` are tables indexed by the donor and acceptor type
     (per-donor parameter ``dtype``, per-acceptor parameter ``atype``).
     """
-    eps_hb = "eps" if settings.epsilon is None else repr(float(settings.epsilon))
+    eps_local = "eps" if settings.epsilon is None else repr(float(settings.epsilon))
+    eps_nonlocal = eps_local if settings.epsilon_nonlocal is None else repr(float(settings.epsilon_nonlocal))
+    # residues at least nonlocal_separation apart, or on different chains
+    # (the builder separates chains by a gap of at least that many residues)
+    nonlocal_switch = f"step(abs(dres - ares) - {float(settings.nonlocal_separation) - 0.5!r})"
+    eps_hb = f"select({nonlocal_switch}, {eps_nonlocal}, {eps_local})"
     half_pi = repr(float(np.pi / 2.0))
 
     def angular(name, angle_expression, theta0, sigma):
@@ -200,7 +233,7 @@ def energy_expression(settings):
             "erep = select(c6, step(rmin - r)*(c12/r^12 - c6/r^6 + eps), c12/r^12)",
             # the angular attraction exists only for attractive pairs
             # flat for r <= r0, Gaussian beyond (see the module docstring)
-            f"ehb = -select(c6, 1, 0) * {eps_hb} * exp(-max(r - {float(settings.r0)!r}, 0)^2"
+            f"ehb = -select(c6, 1, 0) * ({eps_hb}) * exp(-max(r - {float(settings.r0)!r}, 0)^2"
             f"/{float(2.0 * float(settings.width) ** 2)!r}) * aNHO * aHOC",
             *angular("aNHO", "angle(d2, d1, a1)", settings.donor_theta0, settings.donor_width),
             *angular("aHOC", "angle(d1, a1, a2)", settings.acceptor_theta0, settings.acceptor_width),
@@ -232,8 +265,10 @@ def add_hbond_force(system, settings, c6_table, c12_table, donors, acceptors, ex
         Particle pairs excluded from the nonbonded force (i < j).
     residue_of_atom : dict, optional
         Particle index -> global residue index.  Indices must be consecutive
-        along a chain and differ by at least ``min_residue_separation``
-        between different molecule copies (the builder leaves a gap).  Used
+        along a chain and differ by at least ``nonlocal_separation`` (and
+        ``min_residue_separation``) between different molecule copies (the
+        builder leaves such a gap), so that bonds between chains are
+        non-local.  Used
         to apply ``settings.min_residue_separation``; without it the rule is
         not applied.
 

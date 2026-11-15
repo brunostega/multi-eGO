@@ -6,6 +6,7 @@ having the LJ parameters of the multi-eGO mg prior (eps = 0.2 kJ/mol,
 r_min = 0.1697 nm), and check the properties stated in the module docstring.
 """
 
+import dataclasses
 import os
 import sys
 
@@ -49,7 +50,7 @@ def lj(r):
     return C12 / r**12 - C6 / r**6
 
 
-def hbond_energy(r, theta_nho=180.0, theta_hoc=147.0, settings=None, c6=C6, c12=C12):
+def hbond_energy(r, theta_nho=180.0, theta_hoc=147.0, settings=None, c6=C6, c12=C12, separation=None):
     """
     Energy of the term for H...O distance r and the two angles (degrees).
     H at the origin, O on +x; N and C placed to give the requested angles.
@@ -62,7 +63,10 @@ def hbond_energy(r, theta_nho=180.0, theta_hoc=147.0, settings=None, c6=C6, c12=
     c6_table = np.array([[0.0, c6], [c6, 0.0]])
     c12_table = np.array([[0.0, c12], [c12, 0.0]])
     # particles: 0 = H (type 0), 1 = N, 2 = O (type 1), 3 = C
-    hbond.add_hbond_force(system, settings, c6_table, c12_table, [(0, 1, 0)], [(2, 3, 1)], set())
+    # separation: residue distance between donor and acceptor (None: no
+    # residue information, i.e. a non-local pair)
+    residues = None if separation is None else {0: separation, 1: separation, 2: 0, 3: 0}
+    hbond.add_hbond_force(system, settings, c6_table, c12_table, [(0, 1, 0)], [(2, 3, 1)], set(), residues)
     # the replaced LJ entries must be zeroed
     assert c6_table[0, 1] == c6_table[1, 0] == c12_table[0, 1] == 0.0
 
@@ -262,8 +266,12 @@ def reference_hbond_energy(params, positions, settings):
                 # local pair: keeps the plain Lennard-Jones it had before
                 pair_energies[(h, o)] = c12 / r**12 - c6 / r**6
                 continue
+            nonlocal_pair = abs(int(resnum[h]) - int(resnum[o])) >= settings.nonlocal_separation
+            pair_settings = settings
+            if nonlocal_pair and settings.epsilon_nonlocal is not None:
+                pair_settings = dataclasses.replace(settings, epsilon=settings.epsilon_nonlocal)
             pair_energies[(h, o)] = expected(
-                r, np.degrees(angle(n, h, o)), np.degrees(angle(h, o, c)), settings, c6=c6, c12=c12
+                r, np.degrees(angle(n, h, o)), np.degrees(angle(h, o, c)), pair_settings, c6=c6, c12=c12
             )
     return sum(pair_energies.values()), pair_energies, len(donors["h"]), len(acceptors["o"])
 
@@ -427,3 +435,47 @@ def test_local_pairs_keep_lennard_jones(gb1_hbond):
     system = builder.create_system(params, box_vectors=box)
     total, _, _, _ = reference_hbond_energy(params, positions, params.hbond)
     assert energy.decompose(system, positions)["hbonds"]["energy"] == pytest.approx(total, rel=1e-8)
+
+
+@pytest.mark.parametrize("separation,depth", [(3, 12.0), (4, 12.0), (5, 5.0), (9, 5.0), (None, 5.0)])
+def test_local_and_nonlocal_depth(separation, depth):
+    """i->i+3/i+4 bonds get epsilon, bonds 5+ residues apart (or without residue information) epsilon_nonlocal."""
+    settings = hbond.HBondSettings(epsilon=12.0, epsilon_nonlocal=5.0)
+    assert hbond_energy(DEFAULTS.r0, settings=settings, separation=separation) == pytest.approx(-depth, rel=1e-9)
+
+
+def test_nonlocal_defaults_to_local_depth():
+    """Without epsilon_nonlocal the model is unchanged: one depth for every bond."""
+    settings = hbond.HBondSettings(epsilon=12.0)
+    for separation in (3, 4, 5, 10):
+        assert hbond_energy(DEFAULTS.r0, settings=settings, separation=separation) == pytest.approx(-12.0, rel=1e-9)
+
+
+def test_nonlocal_reference_on_gb1(gb1_hbond):
+    """GB1 (helix + sheet): OpenMM matches the reference with separate depths."""
+    params, positions, box = gb1_hbond
+    params.attrs["hbond"] = hbond.HBondSettings(epsilon=12.0, epsilon_nonlocal=4.0).to_json()
+    try:
+        system = builder.create_system(params, box_vectors=box)
+        total, pairs, _, _ = reference_hbond_energy(params, positions, params.hbond)
+        assert energy.decompose(system, positions)["hbonds"]["energy"] == pytest.approx(total, rel=1e-8)
+        # GB1 has both kinds of bond, so the split must change the energy
+        uniform = hbond.HBondSettings(epsilon=12.0)
+        assert abs(total - reference_hbond_energy(params, positions, uniform)[0]) > 1.0
+    finally:
+        params.attrs["hbond"] = hbond.HBondSettings().to_json()
+
+
+def test_bonds_between_chains_are_nonlocal(gb1_hbond):
+    """Copies are separated by at least nonlocal_separation residues in the residue index."""
+    params, _, box = gb1_hbond
+    system = builder.create_system(params, molecules=[("GB1", 3)], box_vectors=box)
+    force = next(f for f in system.getForces() if f.getName() == "hbonds")
+    settings = params.hbond
+    residues = [force.getDonorParameters(d)[3][1] for d in range(force.getNumDonors())]
+    per_copy = len(residues) // 3
+    for a in range(3):
+        for b in range(a + 1, 3):
+            first, second = residues[a * per_copy :], residues[b * per_copy :]  # noqa: E203
+            closest = min(abs(x - y) for x in first[:per_copy] for y in second[:per_copy])
+            assert closest >= settings.nonlocal_separation

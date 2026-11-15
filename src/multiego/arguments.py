@@ -82,6 +82,19 @@ _args_dict_shared = {
         "type": float,
         "help": "Depth of the hydrogen-bond well (kJ/mol). Default: the epsilon of each H-O Lennard-Jones pair.",
     },
+    "--hbond_epsilon_nonlocal": {
+        "default": None,
+        "type": float,
+        "help": "Depth of the hydrogen-bond well (kJ/mol) for NON-LOCAL bonds: donor and acceptor at least "
+        "--hbond_nonlocal_separation residues apart, or on different chains (beta sheets, tertiary and "
+        "intermolecular contacts). Default: the same as --hbond_epsilon.",
+    },
+    "--hbond_nonlocal_separation": {
+        "default": None,
+        "type": int,
+        "help": "Minimum residue separation of a non-local hydrogen bond. Default: 5, so that i->i+3 and i->i+4 "
+        "bonds (helices, turns) are local.",
+    },
     "--hbond_r0": {
         "default": None,
         "type": float,

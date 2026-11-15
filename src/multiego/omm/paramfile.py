@@ -365,6 +365,8 @@ def from_generation(meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, attr
             "acceptor_theta0": parameters.hbond_acceptor_theta0,
             "acceptor_width": parameters.hbond_acceptor_width,
             "cutoff": parameters.hbond_cutoff,
+            "epsilon_nonlocal": getattr(parameters, "hbond_epsilon_nonlocal", None),
+            "nonlocal_separation": getattr(parameters, "hbond_nonlocal_separation", None),
         }
         settings = {k: v for k, v in overrides.items() if v is not None or k == "epsilon"}
         file_attrs["hbond"] = HBondSettings(**settings).to_json()
