@@ -281,6 +281,12 @@ def cmap_from_maps(molecules, maps):
     (C of the previous residue and N of the next one must exist, so the first
     and last residues of a chain are skipped -- as are the Ace/Nme caps).
     """
+    # Keep only the maps of residue types present in the system: OpenMM's CPU
+    # and Reference platforms pay for every map they are given at every step
+    # (with all 20 maps, the CMAP of a 15-residue peptide cost 30x the rest of
+    # the force field).
+    present = {str(n) for mol in molecules.values() for n in mol.atoms["resname"]}
+    maps = {name: grid for name, grid in maps.items() if name in present}
     order = {name: i for i, name in enumerate(sorted(maps))}
     columns = {k: [] for k in ("molecule", "index", "c0", "n", "ca", "c", "n1")}
     for name, mol in molecules.items():

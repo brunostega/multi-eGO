@@ -167,3 +167,23 @@ def test_update_ignores_cells_below_the_sampling_resolution():
     target[25, 20], target[10, 30] = 0.01, 0.99
     new, _ = cmap.update(np.zeros((size, size)), sampled, target, 300.0, n_samples=frames, sigma_bins=0.0)
     assert new[25, 20] < new[0, 0] - 4.0
+
+
+def test_only_used_maps_are_stored():
+    """
+    The parameter file keeps only the CMAP maps of residue types present in
+    the system: OpenMM's CPU/Reference platforms pay for every map at every
+    step (all 20 maps made the CMAP of a 15-residue peptide 30x more expensive
+    than the rest of the force field).
+    """
+    from multiego.omm import paramfile
+
+    atoms = {
+        "resname": np.array(["ACE", "ALA", "GLN", "NME"]),
+        "resnum": np.array([1, 2, 3, 4]),
+        "name": np.array(["C", "CA", "CA", "N"]),
+    }
+    molecules = {"X": paramfile.MoleculeParameters("X", atoms, {})}
+    maps = {name: np.zeros((36, 36)) for name in ("ALA", "GLN", "GLY", "PRO", "TRP")}
+    result = paramfile.cmap_from_maps(molecules, maps)
+    assert sorted(result.maps) == ["ALA", "GLN"]

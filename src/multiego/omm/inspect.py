@@ -80,6 +80,12 @@ def main():
     parser.add_argument("params", help="mego_params.h5")
     parser.add_argument("conf", nargs="?", help="optional structure (.gro) to evaluate the terms on")
     parser.add_argument("--molecules", default="", help="composition as NAME:COUNT,... (as in mego_simulate.py)")
+    parser.add_argument(
+        "--platform",
+        default="",
+        help="also evaluate every term on this OpenMM platform (e.g. CUDA, OpenCL, CPU) and compare it with the "
+        "Reference platform: a check that custom forces (H-bond, CMAP, tabulated LJ) behave the same on the GPU",
+    )
     args = parser.parse_args()
 
     params = paramfile.read(args.params)
@@ -91,10 +97,19 @@ def main():
     system = builder.create_system(params, parse_molecules(args.molecules), box_vectors=gro.getPeriodicBoxVectors())
     print("forces in the System:", ", ".join(f.getName() for f in system.getForces()))
     terms = energy.decompose(system, gro.getPositions())
-    print(f"energies on {args.conf} (kJ/mol):")
+    other = energy.decompose(system, gro.getPositions(), args.platform) if args.platform else None
+    print(f"energies on {args.conf} (kJ/mol)" + (f", Reference vs {args.platform}:" if other else ":"))
     for term in energy.TERMS:
         if term in terms:
-            print(f"   {term:20s} {terms[term]['energy']:12.3f}")
+            line = f"   {term:20s} {terms[term]['energy']:12.3f}"
+            if other:
+                e = other[term]["energy"]
+                df = np.abs(other[term]["forces"] - terms[term]["forces"]).max()
+                flag = (
+                    "" if abs(e - terms[term]["energy"]) < 1e-3 * max(1.0, abs(e)) and df < 1.0 else "   <-- DIFFERENT"
+                )
+                line += f" {e:12.3f}   max force difference {df:8.3f} kJ/mol/nm{flag}"
+            print(line)
 
     # Geometric count of backbone hydrogen bonds, independent of the term.
     x = np.array(gro.getPositions()._value)
