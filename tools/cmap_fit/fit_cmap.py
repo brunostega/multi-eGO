@@ -110,6 +110,9 @@ def main():
     parser.add_argument("--interval", type=int, default=100, help="steps between stored frames")
     parser.add_argument("--damping", type=float, default=1.0)
     parser.add_argument(
+        "--initial", default="", help="continue the fit from this map (.npz with key 'cmap') instead of zero"
+    )
+    parser.add_argument(
         "--flatten",
         type=float,
         default=0.0,
@@ -144,6 +147,10 @@ def main():
     gro = app.GromacsGroFile(args.conf)
     box = gro.getPeriodicBoxVectors()
     grid = np.zeros((args.size, args.size))
+    if args.initial:
+        grid = np.array(np.load(args.initial)["cmap"], dtype=float)
+        if grid.shape != (args.size, args.size):
+            raise ValueError(f"{args.initial}: map is {grid.shape}, expected {args.size}x{args.size}")
     params.cmap = paramfile.cmap_from_maps(params.molecules, {args.resname: grid})
 
     positions = gro.getPositions()
