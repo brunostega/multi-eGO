@@ -103,6 +103,21 @@ def build_parser():
     p.add_argument("--restart", default="", help="checkpoint file to continue from (positions, velocities, step)")
     p.add_argument("--seed", type=int, default=0, help="random seed (0: chosen by OpenMM)")
     p.add_argument("--platform", default="", help="OpenMM platform (CUDA, OpenCL, CPU, Reference; default: fastest)")
+    p.add_argument(
+        "--threads",
+        type=int,
+        default=0,
+        help="CPU platform only: number of threads (0: all cores). GPU platforms use one host thread per "
+        "simulation; to use more of a GPU, run several simulations on it at the same time.",
+    )
+    p.add_argument("--device", default="", help="CUDA/OpenCL: GPU index (e.g. 0, or 0,1); default: chosen by OpenMM")
+    p.add_argument(
+        "--precision",
+        default="",
+        choices=["", "single", "mixed", "double"],
+        help="CUDA/OpenCL: floating-point precision (default mixed). 'single' is faster but less accurate "
+        "for energy conservation; 'mixed' is the safe choice for production.",
+    )
     return p
 
 
@@ -144,6 +159,41 @@ def add_position_restraints(system, topology, positions, k):
     system.addForce(force)
 
 
+def platform_and_properties(args):
+    """
+    Platform and platform properties for app.Simulation.
+
+    * CPU: ``Threads`` (all cores by default).  This is the only platform
+      where the number of threads controls the speed of one simulation.
+    * CUDA/OpenCL: ``DeviceIndex`` and ``Precision``.  The force calculation
+      runs on the GPU; the host uses one thread per simulation, so threads
+      are not a setting there.  Small systems (a peptide, a single protein)
+      leave most of a GPU idle: running several independent simulations on
+      the same GPU at the same time (e.g. replicas, temperatures, seeds)
+      raises the total throughput, and NVIDIA MPS helps further when many
+      processes share one GPU.
+    """
+    if not args.platform:
+        if args.threads or args.device or args.precision:
+            raise SystemExit("--threads, --device and --precision require --platform")
+        return []
+    platform = mm.Platform.getPlatformByName(args.platform)
+    properties = {}
+    if args.platform == "CPU":
+        if args.device or args.precision:
+            raise SystemExit("--device and --precision apply to CUDA/OpenCL, not to the CPU platform")
+        if args.threads:
+            properties["Threads"] = str(args.threads)
+    elif args.platform in ("CUDA", "OpenCL"):
+        if args.threads:
+            raise SystemExit("--threads applies to the CPU platform only (GPU platforms use one host thread)")
+        if args.device:
+            properties["DeviceIndex"] = args.device
+        if args.precision:
+            properties["Precision"] = args.precision
+    return [platform, properties]
+
+
 def run(args):
     """Set up and run the simulation described by the parsed arguments."""
     params = paramfile.read(args.params)
@@ -167,9 +217,14 @@ def run(args):
     )
     if args.seed:
         integrator.setRandomNumberSeed(args.seed)
-    platform = [mm.Platform.getPlatformByName(args.platform)] if args.platform else []
-    simulation = app.Simulation(topology, system, integrator, *platform)
-    print(f"Platform: {simulation.context.getPlatform().getName()}, {system.getNumParticles()} atoms")
+    simulation = app.Simulation(topology, system, integrator, *platform_and_properties(args))
+    used = simulation.context.getPlatform()
+    details = {
+        name: used.getPropertyValue(simulation.context, name)
+        for name in ("Threads", "DeviceIndex", "DeviceName", "Precision")
+        if name in used.getPropertyNames()
+    }
+    print(f"Platform: {used.getName()} {details}, {system.getNumParticles()} atoms")
     print("Forces:", ", ".join(f.getName() for f in system.getForces()))
     from multiego.omm.inspect import describe
 
