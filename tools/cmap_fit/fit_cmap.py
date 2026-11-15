@@ -156,6 +156,8 @@ def main():
     positions = gro.getPositions()
     nsteps = int(args.ns * 1000 / 0.005)
     bias = cmap.flattening_bias(target, args.temperature, cap=args.flatten) if args.flatten > 0 else None
+    reference = cmap.basin_populations(target)
+    g_target = -cmap.KB * args.temperature * np.log(reference["alphaL"] / reference["alphaR"])
     history, maps = [], []
     for iteration in range(args.iterations):
         start = time.time()
@@ -178,16 +180,39 @@ def main():
         # the *current* map: this is the quantity that must go to zero.
         overlap = float(np.minimum(sampled, target).sum())
         history.append({"overlap": overlap, **populations, "j": cmap.mean_j(sampled)})
-        # With reweighting the effective number of frames is smaller than
-        # len(phi); it sets the pseudo-count (the resolution of the fit).
-        n_effective = len(phi) if weights is None else weights.sum() ** 2 / (weights**2).sum()
+        # The update compares simulation and target in the space that was
+        # actually sampled.  With the flattening bias, that is the biased
+        # space: unweighted histogram of the biased run against the target
+        # multiplied by exp(-U_bias/kT).  The ratio of the two is the same as
+        # between the unbiased distributions (the bias cancels), but the
+        # pseudo-count of one frame per cell then reflects the frames really
+        # collected in each cell.  (Applying it to the reweighted histogram,
+        # with the effective sample size, made it so large in rare cells that
+        # it cancelled the very correction the bias is there for: alphaL did
+        # not converge.)
+        if bias is None:
+            fit_sampled, fit_target = sampled, target
+        else:
+            fit_sampled = cmap.histogram(phi, psi, args.size)
+            fit_target = target * np.exp(-bias / (cmap.KB * args.temperature))
+            fit_target /= fit_target.sum()
         grid, rms = cmap.update(
-            grid, sampled, target, args.temperature, n_effective, damping=args.damping, max_step=args.max_step
+            grid, fit_sampled, fit_target, args.temperature, len(phi), damping=args.damping, max_step=args.max_step
         )
         maps.append(grid)
+        # Checkpoint after every iteration: an interrupted fit can be resumed
+        # with --initial OUTPUT_checkpoint.npz, losing at most one iteration.
+        np.savez(args.output.replace(".npz", "_checkpoint.npz"), cmap=grid, iteration=iteration)
         print(
             f"  iter {iteration}: "
             + "  ".join(f"{k} {100 * populations[k]:5.1f}%" for k in ("alphaR", "PPII", "beta"))
+            + f"  alphaL {100 * populations['alphaL']:.2f}%"
+            + (
+                f" (dG aL-aR {-cmap.KB * args.temperature * np.log(populations['alphaL'] / populations['alphaR']):.2f}"
+                f" vs {g_target:.2f})"
+                if populations["alphaL"] > 0
+                else ""
+            )
             + f"  <3J> {history[-1]['j']:.2f}  overlap {overlap:.3f}"
             + f"  |dU| {rms:.2f} kJ/mol  ({time.time() - start:.0f} s, {len(phi)} frames)"
         )
