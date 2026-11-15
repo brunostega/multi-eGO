@@ -4,6 +4,12 @@
 #
 #   GMXLIB=$PWD GMX=gmx tools/cmap_fit/fit_all.sh WORKDIR TARGETDIR ITER NS RES1 RES2 ...
 #
+# FLATTEN (environment, default 12 kJ/mol) is the depth of the bias that
+# flattens the target landscape during the fit, so that rare basins such as
+# alphaL are sampled and fitted (see multiego.cmap.flattening_bias).  Without
+# it the fitted maps under-penalize alphaL by 3-6 kJ/mol per residue, enough
+# to make left-handed helices of L residues stable.  FLATTEN=0 disables it.
+#
 # TARGETDIR holds the Choi & Pappu landscapes as <RESNAME>.csv.  The fitted
 # map of each residue is copied to cmaps/<RESNAME>.npz as soon as it is done.
 set -e
@@ -18,7 +24,7 @@ for aa in "$@"; do
   python "$ROOT/tools/cmap_fit/fit_cmap.py" --params "$dir/out/$aa/base_1/mego_params.h5" \
          --conf "$dir/input/$aa/${aa}_box.gro" --target "$TARGETS/$aa.csv" --resname "$aa" \
          --output "$dir/${aa}_cmap.npz" --size 36 --iterations "$ITER" --ns "$NS" \
-         --damping 0.9 --max-step 5 --average 3 --platform Reference > "$dir/fit.log" 2>&1
+         --damping 0.9 --max-step 5 --average 3 --flatten "${FLATTEN:-12}" --platform Reference > "$dir/fit.log" 2>&1
   python - "$dir/${aa}_cmap.npz" "$ROOT/cmaps/$aa.npz" <<'PY'
 import sys, numpy as np
 d = np.load(sys.argv[1])

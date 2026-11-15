@@ -117,7 +117,7 @@ def to_openmm_map(grid):
     return rolled.ravel(order="F")
 
 
-def histogram(phi, psi, size):
+def histogram(phi, psi, size, weights=None):
     """
     Normalised 2D histogram of sampled angles (degrees), on the same grid
     convention as :func:`load_target`.
@@ -130,7 +130,8 @@ def histogram(phi, psi, size):
         return np.floor(shifted / width).astype(int) % size
 
     counts = np.zeros((size, size))
-    np.add.at(counts, (node_of(phi), node_of(psi)), 1.0)
+    w = 1.0 if weights is None else np.asarray(weights, dtype=float).ravel()
+    np.add.at(counts, (node_of(phi), node_of(psi)), w)
     return counts / counts.sum()
 
 
@@ -297,3 +298,51 @@ def flatten_unpopulated(grid, target, threshold=1e-4):
     flattened = np.array(grid, dtype=float)
     flattened[empty] = flattened.max()
     return flattened
+
+
+def flattening_bias(target, temperature, cap=12.0, sigma_bins=1.0):
+    """
+    Bias map that flattens the target landscape, for sampling rare regions.
+
+    ``U_bias = kT ln(P_target / max P_target)``, clipped at ``-cap``: zero on
+    the most populated cell, negative (favourable) where the target is rare.
+    A simulation whose model already reproduces the target then samples all
+    regions of the target with comparable probability (down to
+    exp(-cap/kT) of the maximum), instead of visiting a basin of 0.3%
+    population a few dozen times.  The unbiased distribution is recovered by
+    weighting each frame with exp(+U_bias/kT) (see :func:`bias_weights`).
+
+    Why it is needed: rare basins such as alphaL for non-glycine residues
+    (target ~0.1-0.3%) are below the sampling resolution of unbiased runs,
+    so their correction is never fitted.  In a helix the resulting error
+    (3-6 kJ/mol per residue toward alphaL) is multiplied by the number of
+    residues, and since the hydrogen-bond term is achiral it can make a
+    left-handed helix of L residues as favourable as a right-handed one.
+    """
+    p = np.maximum(smooth(target, sigma_bins), 0.0)
+    p = p / p.max()
+    return np.clip(KB * temperature * np.log(np.maximum(p, 1e-30)), -cap, 0.0)
+
+
+def bias_weights(phi, psi, bias, temperature):
+    """
+    Reweighting factors exp(+U_bias/kT) of sampled frames, with U_bias
+    interpolated bilinearly on the periodic node grid of :func:`grid_angles`.
+    """
+    size = bias.shape[0]
+    width = 360.0 / size
+
+    def coordinates(angles):
+        position = ((np.asarray(angles, dtype=float).ravel() + 180.0) % 360.0) / width
+        lower = np.floor(position).astype(int) % size
+        return lower, (lower + 1) % size, position - np.floor(position)
+
+    i0, i1, fi = coordinates(phi)
+    j0, j1, fj = coordinates(psi)
+    value = (
+        bias[i0, j0] * (1 - fi) * (1 - fj)
+        + bias[i1, j0] * fi * (1 - fj)
+        + bias[i0, j1] * (1 - fi) * fj
+        + bias[i1, j1] * fi * fj
+    )
+    return np.exp(value / (KB * temperature))

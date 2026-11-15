@@ -187,3 +187,30 @@ def test_only_used_maps_are_stored():
     maps = {name: np.zeros((36, 36)) for name in ("ALA", "GLN", "GLY", "PRO", "TRP")}
     result = paramfile.cmap_from_maps(molecules, maps)
     assert sorted(result.maps) == ["ALA", "GLN"]
+
+
+def test_flattening_bias_and_reweighting_recover_the_distribution():
+    """
+    Frames sampled from a biased distribution P*exp(-U_bias/kT) and weighted
+    with bias_weights give back P, including its rare regions.
+    """
+    size, temperature = 36, 300.0
+    angles = cmap.grid_angles(size)
+    phi_grid, psi_grid = np.meshgrid(angles, angles, indexing="ij")
+    target = np.exp(-((phi_grid + 70) ** 2 + (psi_grid - 140) ** 2) / 800.0) + 0.003 * np.exp(
+        -((phi_grid - 60) ** 2 + (psi_grid - 40) ** 2) / 300.0
+    )  # a main basin and a rare "alphaL" one
+    target /= target.sum()
+    bias = cmap.flattening_bias(target, temperature, cap=12.0, sigma_bins=0.0)
+    assert bias.max() == pytest.approx(0.0) and bias.min() >= -12.0
+    biased = target * np.exp(-bias / (cmap.KB * temperature))
+    biased /= biased.sum()
+    rng = np.random.default_rng(5)
+    cells = rng.choice(size * size, size=200000, p=biased.ravel())
+    i, j = np.unravel_index(cells, (size, size))
+    phi, psi = angles[i], angles[j]
+    recovered = cmap.histogram(phi, psi, size, cmap.bias_weights(phi, psi, bias, temperature))
+    rare = (np.abs(phi_grid - 60) < 25) & (np.abs(psi_grid - 40) < 25)
+    assert recovered[rare].sum() == pytest.approx(target[rare].sum(), rel=0.1)
+    # and the rare region is sampled far more often than without the bias
+    assert biased[rare].sum() > 20 * target[rare].sum()

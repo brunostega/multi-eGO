@@ -62,7 +62,7 @@ def dihedrals(positions, i, j, k, m):
     return np.degrees(np.arctan2(np.sum(np.cross(b1, v) * w, -1), np.sum(v * w, -1)))
 
 
-def sample(params, positions, box, grid, temperature, nsteps, interval, seed, platform, fast=True):
+def sample(params, positions, box, grid, temperature, nsteps, interval, seed, platform, fast=True, bias=None):
     """
     Run the dipeptide with ``grid`` as its CMAP and return the sampled angles.
 
@@ -72,13 +72,20 @@ def sample(params, positions, box, grid, temperature, nsteps, interval, seed, pl
     """
     params.cmap.maps[next(iter(params.cmap.maps))] = grid
     system = create_single_molecule_system(params, box) if fast else builder.create_system(params, box_vectors=box)
+    atoms = torsion_indices(params)
+    if bias is not None:
+        # Flattening bias on the same (phi, psi), removed afterwards by
+        # reweighting (multiego.cmap.flattening_bias / bias_weights).
+        biasing = mm.CMAPTorsionForce()
+        biasing.addMap(bias.shape[0], cmap.to_openmm_map(bias))
+        biasing.addTorsion(0, *atoms[:4], *atoms[1:])
+        system.addForce(biasing)
     integrator = mm.LangevinMiddleIntegrator(temperature * u.kelvin, 0.04 / u.picosecond, 0.005 * u.picosecond)
     integrator.setRandomNumberSeed(seed)
     context = mm.Context(system, integrator, mm.Platform.getPlatformByName(platform))
     context.setPositions(positions)
     context.setVelocitiesToTemperature(temperature * u.kelvin, seed)
 
-    atoms = torsion_indices(params)
     frames = []
     for _ in range(nsteps // interval):
         integrator.step(interval)
@@ -102,6 +109,13 @@ def main():
     parser.add_argument("--temperature", type=float, default=300.0)
     parser.add_argument("--interval", type=int, default=100, help="steps between stored frames")
     parser.add_argument("--damping", type=float, default=1.0)
+    parser.add_argument(
+        "--flatten",
+        type=float,
+        default=0.0,
+        help="sample with a bias that flattens the target landscape down to this depth (kJ/mol), and reweight. "
+        "Needed to fit rare basins such as alphaL (target ~0.2%%), which unbiased runs do not resolve. 0: off.",
+    )
     parser.add_argument(
         "--max-step", type=float, default=5.0, help="largest change of a cell in one iteration (kJ/mol)"
     )
@@ -134,20 +148,34 @@ def main():
 
     positions = gro.getPositions()
     nsteps = int(args.ns * 1000 / 0.005)
+    bias = cmap.flattening_bias(target, args.temperature, cap=args.flatten) if args.flatten > 0 else None
     history, maps = [], []
     for iteration in range(args.iterations):
         start = time.time()
         phi, psi, positions = sample(
-            params, positions, box, grid, args.temperature, nsteps, args.interval, args.seed + iteration, args.platform
+            params,
+            positions,
+            box,
+            grid,
+            args.temperature,
+            nsteps,
+            args.interval,
+            args.seed + iteration,
+            args.platform,
+            bias=bias,
         )
-        sampled = cmap.histogram(phi, psi, args.size)
+        weights = None if bias is None else cmap.bias_weights(phi, psi, bias, args.temperature)
+        sampled = cmap.histogram(phi, psi, args.size, weights)
         populations = cmap.basin_populations(sampled)
         # Divergence from the target, on the sampled distribution produced by
         # the *current* map: this is the quantity that must go to zero.
         overlap = float(np.minimum(sampled, target).sum())
         history.append({"overlap": overlap, **populations, "j": cmap.mean_j(sampled)})
+        # With reweighting the effective number of frames is smaller than
+        # len(phi); it sets the pseudo-count (the resolution of the fit).
+        n_effective = len(phi) if weights is None else weights.sum() ** 2 / (weights**2).sum()
         grid, rms = cmap.update(
-            grid, sampled, target, args.temperature, len(phi), damping=args.damping, max_step=args.max_step
+            grid, sampled, target, args.temperature, n_effective, damping=args.damping, max_step=args.max_step
         )
         maps.append(grid)
         print(
