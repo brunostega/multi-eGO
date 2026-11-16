@@ -73,6 +73,16 @@ which eps = c6^2/(4 c12) and r_min = (2 c12/c6)^(1/6).
 * A pair whose LJ is purely repulsive (c6 = 0) keeps its c12/r^12 repulsion
   and gets no attraction.
 
+Production models
+-----------------
+In a model with learned contacts the hydrogen bond is not reweighted: its
+repulsive wall, the switch that enables the attraction and (when epsilon is
+not set) its depth come from the prior parameters of the H-O pair, never
+from the training data.  Learned H-O entries of the LJ table are replaced by
+the term like all donor-acceptor entries; donor-acceptor pairs closer than
+min_residue_separation along the chain, which are ordinary LJ pairs, keep
+their learned values.
+
 Local and non-local bonds
 -------------------------
 The depth of the well can differ between *local* bonds (donor and acceptor
@@ -228,26 +238,41 @@ def energy_expression(settings):
     local = f"step({float(settings.min_residue_separation) - 0.5!r} - abs(dres - ares))"
     return ";".join(
         [
+            # local pairs: plain LJ with the table as learned (c6/c12);
+            # hydrogen bonds: everything from the prior (c6p/c12p), so that the
+            # term does not depend on the training data (see add_hbond_force)
             f"select({local}, c12/r^12 - c6/r^6, erep + ehb)",
             # attractive LJ (c6 > 0): WCA repulsion; repulsive LJ: plain c12/r^12
-            "erep = select(c6, step(rmin - r)*(c12/r^12 - c6/r^6 + eps), c12/r^12)",
+            "erep = select(c6p, step(rmin - r)*(c12p/r^12 - c6p/r^6 + eps), c12p/r^12)",
             # the angular attraction exists only for attractive pairs
             # flat for r <= r0, Gaussian beyond (see the module docstring)
-            f"ehb = -select(c6, 1, 0) * ({eps_hb}) * exp(-max(r - {float(settings.r0)!r}, 0)^2"
+            f"ehb = -select(c6p, 1, 0) * ({eps_hb}) * exp(-max(r - {float(settings.r0)!r}, 0)^2"
             f"/{float(2.0 * float(settings.width) ** 2)!r}) * aNHO * aHOC",
             *angular("aNHO", "angle(d2, d1, a1)", settings.donor_theta0, settings.donor_width),
             *angular("aHOC", "angle(d1, a1, a2)", settings.acceptor_theta0, settings.acceptor_width),
             "r = distance(d1, a1)",
             # LJ well of this pair; the max() avoid 0/0 when c6 = 0 (unused then)
-            "eps = c6^2/(4*max(c12, 1e-30))",
-            "rmin = (2*c12/max(c6, 1e-30))^(1/6)",
+            "eps = c6p^2/(4*max(c12p, 1e-30))",
+            "rmin = (2*c12p/max(c6p, 1e-30))^(1/6)",
             "c6 = c6hb(dtype, atype)",
             "c12 = c12hb(dtype, atype)",
+            "c6p = c6hbprior(dtype, atype)",
+            "c12p = c12hbprior(dtype, atype)",
         ]
     )
 
 
-def add_hbond_force(system, settings, c6_table, c12_table, donors, acceptors, excluded_pairs, residue_of_atom=None):
+def add_hbond_force(
+    system,
+    settings,
+    c6_table,
+    c12_table,
+    donors,
+    acceptors,
+    excluded_pairs,
+    residue_of_atom=None,
+    prior_tables=None,
+):
     """
     Add the hydrogen-bond force and remove the H-O entries it replaces from
     the LJ type tables.
@@ -295,6 +320,20 @@ def add_hbond_force(system, settings, c6_table, c12_table, donors, acceptors, ex
     # Discrete2DFunction: first index (donor type) varies fastest.
     force.addTabulatedFunction("c6hb", mm.Discrete2DFunction(nd, na, sub_c6.ravel(order="F")))
     force.addTabulatedFunction("c12hb", mm.Discrete2DFunction(nd, na, sub_c12.ravel(order="F")))
+    # The hydrogen bond itself (repulsive wall, on/off switch of the
+    # attraction, and the depth when epsilon is taken from the pair) uses the
+    # prior parameters only: in a production model the learned H-O contacts
+    # must not change it.  Local pairs (closer than min_residue_separation)
+    # are ordinary LJ pairs and keep the learned values above.
+    # prior_tables: (c6, c12) of the prior alone; None = same as the tables
+    # (mg models, which have no learned overrides).
+    p6, p12 = (c6_table, c12_table) if prior_tables is None else prior_tables
+    force.addTabulatedFunction(
+        "c6hbprior", mm.Discrete2DFunction(nd, na, np.asarray(p6)[np.ix_(d_types, a_types)].ravel(order="F"))
+    )
+    force.addTabulatedFunction(
+        "c12hbprior", mm.Discrete2DFunction(nd, na, np.asarray(p12)[np.ix_(d_types, a_types)].ravel(order="F"))
+    )
     force.setNonbondedMethod(mm.CustomHbondForce.CutoffPeriodic)
     force.setCutoffDistance(settings.cutoff)
 

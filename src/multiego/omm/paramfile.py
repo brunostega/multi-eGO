@@ -152,6 +152,15 @@ class NonbondedParameters:
         """
         return dense_tables(self.chem_type, self.default_c6, self.default_c12, self.prior, self.overrides)
 
+    def prior_tables(self):
+        """
+        (n_types x n_types) c6 and c12 tables of the prior alone, without the
+        learned overrides.  Used by the hydrogen-bond term, which must not
+        depend on the training data (see ``multiego.omm.hbond``).
+        """
+        empty = {k: np.asarray(v)[:0] for k, v in self.overrides.items()}
+        return dense_tables(self.chem_type, self.default_c6, self.default_c12, self.prior, empty)
+
 
 @dataclass
 class CmapParameters:

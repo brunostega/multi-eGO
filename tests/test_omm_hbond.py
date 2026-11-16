@@ -242,6 +242,8 @@ def reference_hbond_energy(params, positions, settings):
     mol = next(iter(params.molecules.values()))
     donors, acceptors = hbond.find_donors_acceptors(mol.atoms)
     c6_table, c12_table = params.nonbonded.dense_tables()
+    # the hydrogen bond itself uses the prior only (production models)
+    p6_table, p12_table = params.nonbonded.prior_tables()
     types = mol.atoms["nb_type"]
     b = mol.bonded
     excluded = builder.bonded_exclusions(mol.n_atoms, b["bonds"]["ai"], b["bonds"]["aj"], params.nrexcl)
@@ -271,7 +273,12 @@ def reference_hbond_energy(params, positions, settings):
             if nonlocal_pair and settings.epsilon_nonlocal is not None:
                 pair_settings = dataclasses.replace(settings, epsilon=settings.epsilon_nonlocal)
             pair_energies[(h, o)] = expected(
-                r, np.degrees(angle(n, h, o)), np.degrees(angle(h, o, c)), pair_settings, c6=c6, c12=c12
+                r,
+                np.degrees(angle(n, h, o)),
+                np.degrees(angle(h, o, c)),
+                pair_settings,
+                c6=p6_table[types[h], types[o]],
+                c12=p12_table[types[h], types[o]],
             )
     return sum(pair_energies.values()), pair_energies, len(donors["h"]), len(acceptors["o"])
 
@@ -479,3 +486,40 @@ def test_bonds_between_chains_are_nonlocal(gb1_hbond):
             first, second = residues[a * per_copy :], residues[b * per_copy :]  # noqa: E203
             closest = min(abs(x - y) for x in first[:per_copy] for y in second[:per_copy])
             assert closest >= settings.nonlocal_separation
+
+
+def test_learned_h_o_contacts_do_not_change_the_hydrogen_bond(gb1_hbond):
+    """
+    In a production model a learned H-O contact must not change the hydrogen
+    bond (wall, attraction switch, depth): only the prior enters it.  Local
+    H-O pairs (closer than min_residue_separation) are ordinary LJ pairs and
+    do take the learned value.
+    """
+    params, positions, box = gb1_hbond
+    mol = next(iter(params.molecules.values()))
+    resnum = mol.atoms["resnum"].astype(int)
+    donors, acceptors = hbond.find_donors_acceptors(mol.atoms)
+    _, mg_pairs, _, _ = reference_hbond_energy(params, positions, params.hbond)
+    far = next((h, o) for (h, o) in mg_pairs if abs(resnum[h] - resnum[o]) >= params.hbond.min_residue_separation)
+    near = next((h, o) for (h, o) in mg_pairs if abs(resnum[h] - resnum[o]) < params.hbond.min_residue_separation)
+    types = mol.atoms["nb_type"]
+    saved = {k: np.asarray(v).copy() for k, v in params.nonbonded.overrides.items()}
+    try:
+        # learned values: a purely repulsive H-O contact for the H-bond pair
+        # (would switch the attraction off) and a strong attraction for the
+        # local pair
+        new = {
+            "i": np.array([types[far[0]], types[near[0]]]),
+            "j": np.array([types[far[1]], types[near[1]]]),
+            "c6": np.array([0.0, 1.0e-3]),
+            "c12": np.array([1.0e-6, 1.0e-6]),
+        }
+        params.nonbonded.overrides = {k: np.concatenate([saved[k], new[k]]) for k in saved}
+        system = builder.create_system(params, box_vectors=box)
+        total, pairs, _, _ = reference_hbond_energy(params, positions, params.hbond)
+        assert pairs[far] == pytest.approx(mg_pairs[far], rel=1e-12, abs=1e-12)  # H-bond untouched
+        r = np.linalg.norm(positions[near[0]] - positions[near[1]])
+        assert pairs[near] == pytest.approx(1.0e-6 / r**12 - 1.0e-3 / r**6)  # local pair learned
+        assert energy.decompose(system, positions)["hbonds"]["energy"] == pytest.approx(total, rel=1e-8)
+    finally:
+        params.nonbonded.overrides = saved

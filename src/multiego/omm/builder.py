@@ -306,7 +306,15 @@ def create_system(
     c6_table, c12_table = params.nonbonded.dense_tables()
     if hbond_settings is not None and donors and acceptors:
         hbond_term.add_hbond_force(
-            system, hbond_settings, c6_table, c12_table, donors, acceptors, all_exclusions, residue_of_atom
+            system,
+            hbond_settings,
+            c6_table,
+            c12_table,
+            donors,
+            acceptors,
+            all_exclusions,
+            residue_of_atom,
+            prior_tables=params.nonbonded.prior_tables(),
         )
     n_types = params.nonbonded.n_types
     # Discrete2DFunction stores values with the first index varying fastest;
