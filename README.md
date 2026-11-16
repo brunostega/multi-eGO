@@ -43,7 +43,13 @@ The result is a force field that can be simulated with [OpenMM](https://openmm.o
 ## Requirements
 
 - Python ≥ 3.10
-- [OpenMM](https://openmm.org) ≥ 8.1 (installed with the Python environment below) to run simulations with the OpenMM backend
+- [OpenMM](https://openmm.org) ≥ 8.1 (installed with the Python environment below) to run simulations with the OpenMM backend.
+  **GPU support is not included in the plain pip package**, which provides only the Reference and CPU platforms: install
+  the CUDA (or HIP) build with `pip install "openmm[cuda12]"` (or `cuda13`, `hip6`, `hip7`), choosing the CUDA major
+  version supported by your driver (top-right of `nvidia-smi`). conda-forge builds include CUDA (`conda install -c
+  conda-forge openmm cuda-version=12`). Check with `python -m openmm.testInstallation`, which lists the platforms found
+  and compares their forces; `python -c "import openmm; print(openmm.Platform.getPluginLoadFailures())"` explains why a
+  platform that is installed failed to load.
 - [GROMACS](https://www.gromacs.org) > 2022 for the GROMACS backend, `pdb2gmx` (topology preparation) and `cmdata`
 - The `cmdata` tool for extracting contact histograms from trajectories — this requires recompiling GROMACS from source; see [its README](tools/cmdata/README.md) for instructions
 
