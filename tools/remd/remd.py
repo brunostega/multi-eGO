@@ -65,6 +65,13 @@ def main():
     parser.add_argument("--save", type=int, default=1000, help="steps between saved frames")
     parser.add_argument("--output", required=True)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--platform",
+        default="Reference",
+        help="OpenMM platform for all replicas (Reference, CPU, CUDA, OpenCL). On a GPU all replicas share it.",
+    )
+    parser.add_argument("--device", default="", help="CUDA/OpenCL device index")
+    parser.add_argument("--threads", type=int, default=0, help="CPU platform: threads per replica (0: OpenMM default)")
     args = parser.parse_args()
 
     params = paramfile.read(args.params)
@@ -79,7 +86,12 @@ def main():
     for k, temperature in enumerate(temperatures):
         integrator = mm.LangevinMiddleIntegrator(temperature * u.kelvin, 0.04 / u.picosecond, 0.005 * u.picosecond)
         integrator.setRandomNumberSeed(args.seed + 17 * k)
-        context = mm.Context(system, integrator, mm.Platform.getPlatformByName("Reference"))
+        properties = {}
+        if args.platform == "CPU" and args.threads:
+            properties["Threads"] = str(args.threads)
+        if args.platform in ("CUDA", "OpenCL") and args.device:
+            properties["DeviceIndex"] = args.device
+        context = mm.Context(system, integrator, mm.Platform.getPlatformByName(args.platform), properties)
         context.setPositions(structures[k % len(structures)].getPositions())
         mm.LocalEnergyMinimizer.minimize(context, 10.0)
         context.setVelocitiesToTemperature(temperature * u.kelvin, args.seed + 17 * k)
