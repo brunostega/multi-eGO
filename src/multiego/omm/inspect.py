@@ -75,11 +75,60 @@ def describe(params, molecules=None):
             print("            (it looks for atoms named H/N and O/C in the same residue)")
 
 
+def benchmark(system, positions, platform_name, repeats):
+    """
+    Time the force evaluation of every term separately on a platform.
+
+    Each force is put in its own force group; forces and energies of one
+    group at a time are requested ``repeats`` times.  The sum over terms is
+    close to the cost of one MD step (the integrator itself is cheap).
+    """
+    import time
+
+    import openmm as mm
+
+    system = mm.XmlSerializer.clone(system)
+    names = []
+    for group, force in enumerate(system.getForces()):
+        force.setForceGroup(group)
+        names.append(force.getName())
+    context = mm.Context(system, mm.VerletIntegrator(0.001), mm.Platform.getPlatformByName(platform_name))
+    context.setPositions(positions)
+    context.getState(getForces=True)  # compile kernels / build neighbour lists
+    print(f"benchmark on {platform_name}, {system.getNumParticles()} atoms, {repeats} evaluations per term:")
+    timings = []
+    for group, name in enumerate(names):
+        context.getState(getForces=True, groups={group})
+        start = time.time()
+        for _ in range(repeats):
+            context.getState(getForces=True, groups={group})
+        timings.append(((time.time() - start) / repeats * 1000.0, name))
+    total = sum(t for t, _ in timings)
+    for t, name in sorted(timings, reverse=True):
+        print(f"   {name:20s} {t:9.3f} ms  ({100 * t / total:5.1f}%)")
+    print(
+        f"   {'total':20s} {total:9.3f} ms per step  ->  about {0.005 * 86400 / (total / 1000) / 1000:.1f} ns/day at 5 fs"
+    )
+    for force in system.getForces():
+        if force.getName() == "hbonds":
+            pairs = force.getNumDonors() * force.getNumAcceptors()
+            print(
+                f"   (H-bond term: {force.getNumDonors()} donors x {force.getNumAcceptors()} acceptors = {pairs / 1e6:.1f} M pairs per step, no neighbour list)"
+            )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("params", help="mego_params.h5")
     parser.add_argument("conf", nargs="?", help="optional structure (.gro) to evaluate the terms on")
     parser.add_argument("--molecules", default="", help="composition as NAME:COUNT,... (as in mego_simulate.py)")
+    parser.add_argument(
+        "--benchmark",
+        type=int,
+        default=0,
+        help="time every term on --platform (default CPU) over this many force evaluations, to find what "
+        "limits the speed of a simulation",
+    )
     parser.add_argument(
         "--platform",
         default="",
@@ -97,6 +146,9 @@ def main():
     system = builder.create_system(params, parse_molecules(args.molecules), box_vectors=gro.getPeriodicBoxVectors())
     print("forces in the System:", ", ".join(f.getName() for f in system.getForces()))
     terms = energy.decompose(system, gro.getPositions())
+    if args.benchmark:
+        benchmark(system, gro.getPositions(), args.platform or "CPU", args.benchmark)
+        return
     other = energy.decompose(system, gro.getPositions(), args.platform) if args.platform else None
     print(f"energies on {args.conf} (kJ/mol)" + (f", Reference vs {args.platform}:" if other else ":"))
     for term in energy.TERMS:
