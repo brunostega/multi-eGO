@@ -777,10 +777,10 @@
 S      S       1    gb_36
 
 [ angletypes ]
-;CH1    CH2    S     1   ga_16
-CH2    S      S     1   ga_6
+;CAH    CH2t    S     1   ga_16
+CH2t    S      S     1   ga_6
 
 [ dihedraltypes ]
 S      S      1   gd_21
-CH2    S      1   gd_26
+CH2t    S      1   gd_26
 #endif
