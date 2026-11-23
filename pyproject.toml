@@ -22,6 +22,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "flake8", "flake8-pyproject", "black"]
+# OpenMM backend (multiego.openmm_backend). For GPUs install e.g. "openmm[cuda12]".
+openmm = ["openmm>=8.0"]
 
 [project.scripts]
 mego = "mego:main"

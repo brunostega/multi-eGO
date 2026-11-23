@@ -38,6 +38,24 @@ jobs:
          pytest tests/test_apply_symmetries.py
          pytest tests/test_symmetrize_reference_contacts.py
 
+  openmm_backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt openmm
+      - name: Run OpenMM backend tests
+        # GROMACS references are stored in tests/openmm_reference; GROMACS is not needed here
+        run: |
+          pytest tests/test_openmm_backend.py
+
   lint:
     runs-on: ubuntu-latest
     steps:
