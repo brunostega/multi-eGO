@@ -66,7 +66,7 @@ def _assign_molecule_type(molecule_type_dict, molecule_name, molecule_topology):
     return molecule_type_dict
 
 
-def _build_bonded_interactions(topology):
+def _build_bonded_interactions(topology, backbone="gromos"):
     """
     Build the bonded-interaction tables and bond-pair lists for every molecule
     in *topology*.
@@ -75,6 +75,9 @@ def _build_bonded_interactions(topology):
     ----------
     topology : parmed.Structure
         Loaded GROMACS topology.
+    backbone : {"gromos", "cmap"}
+        With "cmap", every backbone phi/psi proper dihedral is dropped
+        (see ``topology.is_backbone_phi_psi``).
 
     Returns
     -------
@@ -91,11 +94,20 @@ def _build_bonded_interactions(topology):
     bond_pairs = {}
     user_pairs = {}
 
+    if backbone not in ("gromos", "cmap"):
+        raise ValueError(f"unknown backbone treatment {backbone!r}")
     for molecule, topol in topology.molecules.items():
+        dihedrals = topol[0].dihedrals
+        if backbone == "cmap":
+            kept = [d for d in dihedrals if not _topology.is_backbone_phi_psi(d)]
+            print(
+                f"  {molecule}: removed {len(dihedrals) - len(kept)} backbone phi/psi dihedral terms (--backbone cmap)"
+            )
+            dihedrals = kept
         meGO_bonded_interactions[molecule] = {
             "bonds": _topology.get_bonds(topol[0].bonds),
             "angles": _topology.get_angles(topol[0].angles),
-            "dihedrals": _topology.get_dihedrals(topol[0].dihedrals),
+            "dihedrals": _topology.get_dihedrals(dihedrals),
             "impropers": _topology.get_impropers(topol[0].impropers),
             "pairs": _topology.get_pairs(topol[0].adjusts),
         }
@@ -345,7 +357,9 @@ class MeGOEnsemble:
             molecule_type_dict,
         ) = _initialize_topology(base_reference_topology, custom_dict, args)
 
-        meGO_bonded_interactions, bond_pairs, user_pairs = _build_bonded_interactions(base_reference_topology)
+        meGO_bonded_interactions, bond_pairs, user_pairs = _build_bonded_interactions(
+            base_reference_topology, backbone=getattr(args, "backbone", "gromos")
+        )
 
         return cls(
             topology=base_reference_topology,

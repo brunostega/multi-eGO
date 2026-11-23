@@ -55,6 +55,14 @@ _args_dict_shared = {
         "type": str,
         "help": "Configuration file for the system",
     },
+    "--backbone": {
+        "default": "gromos",
+        "type": str,
+        "choices": ["gromos", "cmap"],
+        "help": "Backbone phi/psi potential. gromos: keep the GROMOS phi and psi proper dihedrals. "
+        "cmap: remove every phi (C-N-CA-C) and psi (N-CA-C-N) proper dihedral; the phi/psi "
+        "potential is then provided by CMAP maps (OpenMM backend), or absent in GROMACS.",
+    },
     "--outputs_dir": {
         "default": None,
         "type": str,
@@ -259,6 +267,9 @@ def validate_args(args):
             raise ValueError(
                 f"--epsilon ({ref['epsilon']}) must be greater-equal than epsilon_min ({config.epsilon_min})"
             )
+
+    if getattr(args, "backbone", "gromos") not in ("gromos", "cmap"):
+        raise ValueError(f"--backbone must be 'gromos' or 'cmap', got {args.backbone!r}")
 
     if args.symmetry_file and args.symmetry:
         raise ValueError("Both symmetry file and symmetry list provided. Please provide only one.")
