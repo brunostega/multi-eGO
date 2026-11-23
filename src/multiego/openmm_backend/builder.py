@@ -20,6 +20,8 @@ atomtypes + nonbond_params         CustomNonbondedForce, per-atom type index,
                                    correction
 nrexcl + [ exclusions ]            exclusions on the CustomNonbondedForce
 comm every 20 steps                CMMotionRemover(20)
+backbone CMAP (optional)           CMAPTorsionForce on (C-1, N, CA, C, N+1), maps
+                                   from ``cmap_dir`` (see ``cmap.py``)
 =================================  ==============================================
 
 Each term has its own force group (see ``FORCE_GROUPS``), so energies can be
@@ -40,6 +42,7 @@ import numpy as np
 import openmm
 from openmm import app, unit
 
+from . import cmap as _cmap
 from .gromacs_reader import GromacsTopology, read_topology
 
 # Force group of each term. Names match the GROMACS energy terms.
@@ -50,6 +53,7 @@ FORCE_GROUPS = {
     "Improper Dih.": 3,
     "LJ-14": 4,
     "LJ (SR)": 5,
+    "CMAP": 6,
 }
 
 DEFAULT_CUTOFF = 2.5  # nm, rvdw in mdps/ff_aa.mdp
@@ -142,7 +146,13 @@ def lj_tables(top: GromacsTopology):
 # ---------------------------------------------------------------------------
 # System
 # ---------------------------------------------------------------------------
-def create_system(top: GromacsTopology, box_vectors, cutoff=DEFAULT_CUTOFF, com_interval=DEFAULT_COM_INTERVAL):
+def create_system(
+    top: GromacsTopology,
+    box_vectors,
+    cutoff=DEFAULT_CUTOFF,
+    com_interval=DEFAULT_COM_INTERVAL,
+    cmap_dir=None,
+):
     """
     Build the OpenMM System.
 
@@ -156,6 +166,12 @@ def create_system(top: GromacsTopology, box_vectors, cutoff=DEFAULT_CUTOFF, com_
         Nonbonded cutoff in nm.
     com_interval : int or None
         Steps between centre-of-mass motion removal; ``None`` or 0 adds none.
+    cmap_dir : str or None
+        Directory with ``<RES>.cmap`` maps. Every residue with both
+        neighbours (see ``cmap.backbone_quintuplets``) gets the map of its
+        residue type (D-residues: mirrored L map). Raises if a residue has no
+        map, or if it still has a backbone phi/psi proper dihedral (generate
+        the model with ``--backbone cmap``). ``None``: no CMAP.
 
     Returns
     -------
@@ -241,9 +257,65 @@ def create_system(top: GromacsTopology, box_vectors, cutoff=DEFAULT_CUTOFF, com_
     nb_f.setName("LJ (SR)")
     system.addForce(nb_f)
 
+    if cmap_dir is not None:
+        cmap_f = _cmap_force(top, cmap_dir)
+        cmap_f.setUsesPeriodicBoundaryConditions(True)
+        cmap_f.setForceGroup(FORCE_GROUPS["CMAP"])
+        cmap_f.setName("CMAP")
+        system.addForce(cmap_f)
+
     if com_interval:
         system.addForce(openmm.CMMotionRemover(int(com_interval)))
     return system
+
+
+def _cmap_force(top, cmap_dir):
+    """CMAPTorsionForce with only the maps the system uses."""
+    per_moltype = {}
+    needed = set()
+    problems = []
+    for name, count in top.molecules:
+        if count == 0 or name in per_moltype:
+            continue
+        mt = top.moleculetypes[name]
+        quints = _cmap.backbone_quintuplets(mt)
+        per_moltype[name] = quints
+        needed.update(_cmap.map_residue(resname)[0] for resname, _, _ in quints)
+        # a CMAP on top of a phi/psi proper would count the backbone potential twice
+        torsions = {tuple(p[:4]) for p in mt.propers}
+        for resname, resnum, (cp, n, ca, c, nn) in quints:
+            for quad, label in (((cp, n, ca, c), "phi"), ((n, ca, c, nn), "psi")):
+                if quad in torsions or quad[::-1] in torsions:
+                    problems.append(f"{name} {resname}{resnum} still has a {label} proper dihedral")
+    if problems:
+        raise ValueError(
+            "CMAP requested but backbone phi/psi dihedrals are present (generate with --backbone cmap): "
+            + "; ".join(problems[:5])
+            + (" ..." if len(problems) > 5 else "")
+        )
+    maps = _cmap.load_maps(cmap_dir, needed)
+    missing = sorted(needed - set(maps))
+    if missing:
+        raise ValueError(f"no CMAP in {cmap_dir} for residue type(s) {missing}")
+
+    force = openmm.CMAPTorsionForce()
+    map_index = {}
+    offset = 0
+    for name, count in top.molecules:
+        mt = top.moleculetypes[name]
+        quints = per_moltype.get(name, [])
+        for _ in range(count):
+            for resname, _resnum, atoms in quints:
+                key = _cmap.map_residue(resname)
+                if key not in map_index:
+                    grid = maps[key[0]]
+                    if key[1]:
+                        grid = _cmap.mirror(grid)
+                    map_index[key] = force.addMap(grid.shape[0], _cmap.to_openmm_map(grid))
+                cp, n, ca, c, nn = (offset + a for a in atoms)
+                force.addTorsion(map_index[key], cp, n, ca, c, n, ca, c, nn)
+            offset += len(mt.atoms)
+    return force
 
 
 def create_topology(top: GromacsTopology, box_vectors=None):
@@ -297,7 +369,7 @@ def create_integrator(temperature, timestep=DEFAULT_TIMESTEP, friction=DEFAULT_F
     return integrator
 
 
-def load(top_path, gro_path, cutoff=DEFAULT_CUTOFF, com_interval=DEFAULT_COM_INTERVAL):
+def load(top_path, gro_path, cutoff=DEFAULT_CUTOFF, com_interval=DEFAULT_COM_INTERVAL, cmap_dir=None):
     """
     Read a multi-eGO model and its coordinates.
 
@@ -307,6 +379,8 @@ def load(top_path, gro_path, cutoff=DEFAULT_CUTOFF, com_interval=DEFAULT_COM_INT
         ``topol_mego.top``; ``[ molecules ]`` counts are used as written.
     gro_path : str
         Coordinates and box, atoms in topology order.
+    cmap_dir : str or None
+        Backbone CMAP maps, see :func:`create_system`.
 
     Returns
     -------
@@ -323,7 +397,7 @@ def load(top_path, gro_path, cutoff=DEFAULT_CUTOFF, com_interval=DEFAULT_COM_INT
     if box is None:
         raise ValueError(f"{gro_path} has no box")
     box_nm = [v.value_in_unit(unit.nanometer) for v in box]
-    system = create_system(top, box_nm, cutoff=cutoff, com_interval=com_interval)
+    system = create_system(top, box_nm, cutoff=cutoff, com_interval=com_interval, cmap_dir=cmap_dir)
     topology = create_topology(top, box_nm)
     return system, topology, positions
 

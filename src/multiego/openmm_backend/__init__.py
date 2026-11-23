@@ -13,6 +13,7 @@ Typical use::
 """
 
 from .gromacs_reader import TopologyError, read_topology
+from .cmap import read_cmap, write_cmap
 from .builder import (
     FORCE_GROUPS,
     create_integrator,
@@ -32,5 +33,7 @@ __all__ = [
     "lj_tables",
     "load",
     "molecule_exclusions",
+    "read_cmap",
     "read_topology",
+    "write_cmap",
 ]
