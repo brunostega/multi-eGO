@@ -37,6 +37,7 @@ jobs:
          pytest tests/test_multiego.py
          pytest tests/test_apply_symmetries.py
          pytest tests/test_symmetrize_reference_contacts.py
+         pytest tests/test_backbone_option.py
 
   openmm_backend:
     runs-on: ubuntu-latest

@@ -121,6 +121,30 @@ def get_angles(topology):
     return angles_dataframe
 
 
+# Atom names of the backbone phi and psi proper dihedrals, in topology order.
+PHI_NAMES = ("C", "N", "CA", "C")
+PSI_NAMES = ("N", "CA", "C", "N")
+
+
+def is_backbone_phi_psi(dihedral):
+    """
+    True if a proper dihedral is a backbone phi or psi.
+
+    phi = C(i-1)-N(i)-CA(i)-C(i) and psi = N(i)-CA(i)-C(i)-N(i+1), matched by
+    atom names and by the residue boundary they cross, in either direction.
+    Caps are included (e.g. C of ACE, N of NME), so Ace-X-NMe loses both.
+    """
+    atoms = [dihedral.atom1, dihedral.atom2, dihedral.atom3, dihedral.atom4]
+    for quad in (atoms, atoms[::-1]):
+        names = tuple(a.name for a in quad)
+        res = [a.residue.idx for a in quad]
+        if names == PHI_NAMES and res[0] != res[1] and res[1] == res[2] == res[3]:
+            return True
+        if names == PSI_NAMES and res[0] == res[1] == res[2] and res[3] != res[2]:
+            return True
+    return False
+
+
 def get_dihedrals(topology):
     """
     Extracts dihedral angles information from a molecular topology.
