@@ -10,6 +10,7 @@ Numerical core of the CMAP builder.
 
 import numpy as np
 from scipy.interpolate import CubicSpline
+from scipy.optimize import minimize
 
 KB = 0.008314462618  # kJ/mol/K
 
@@ -168,3 +169,113 @@ def dihedral(p0, p1, p2, p3):
     v = b0 - np.dot(b0, b1) * b1
     w = b2 - np.dot(b2, b1) * b1
     return np.degrees(np.arctan2(np.dot(np.cross(b1, v), w), np.dot(v, w)))
+
+
+# ------------------------------------------------------- curvature-limited fit
+"""
+Curvature-constrained CMAP fit.
+
+OpenMM's bicubic CMAP (derivatives from periodic cubic splines) is exactly the
+tensor-product periodic cubic spline through the grid nodes, so the map on any
+fine grid is ``S @ U @ S.T`` and its second derivatives are ``S @ U @ S2.T``
+and ``S2 @ U @ S.T``, all linear in the node values ``U``.
+
+The fit minimises
+
+    -sum_C p_target(C) ln P_rw(C)  +  lam * sum (max(|d2U| - kappa, 0))^2
+
+where P_rw is the sampled distribution reweighted with the map (frames binned
+on a fine grid) and C are bins aligned with the target grid. Only curvature
+above ``kappa`` is penalised; nothing else is smoothed, so basin populations
+are fitted to the original target.
+"""
+
+RAD2 = (180.0 / np.pi) ** 2  # per degree^2 -> per rad^2
+
+
+def spline_basis(n, points_deg, deriv=0):
+    """Cardinal periodic cubic spline basis on n nodes from -180, evaluated at points (degrees)."""
+    x = np.arange(n + 1) * 360.0 / n - 180.0
+    out = np.empty((len(points_deg), n))
+    for i in range(n):
+        y = np.zeros(n + 1)
+        y[i] = 1.0
+        y[-1] = y[0]
+        out[:, i] = CubicSpline(x, y, bc_type="periodic")(points_deg, deriv)
+    return out
+
+
+class ConstrainedFit:
+    def __init__(self, phi, psi, target144, n=72, temperature=300.0, fine_deg=0.25, bin_deg=5.0, weights0=None):
+        self.n, self.kt = n, KB * temperature
+        m = int(round(360.0 / fine_deg))
+        self.m = m
+        centres = -180.0 + fine_deg * (np.arange(m) + 0.5)
+        self.S = spline_basis(n, centres)
+        self.S2 = spline_basis(n, centres, 2) * RAD2
+        self.S1 = spline_basis(n, centres, 1) * np.sqrt(RAD2)
+        # sampled frames on the fine grid (rows psi), optional prior weights (sampled map)
+        i = np.floor((np.asarray(psi) + 180.0) / fine_deg).astype(int) % m
+        j = np.floor((np.asarray(phi) + 180.0) / fine_deg).astype(int) % m
+        cnt = np.zeros((m, m))
+        np.add.at(cnt, (i, j), 1.0 if weights0 is None else weights0)
+        self.counts = cnt
+        # target aggregated to aligned bins of bin_deg
+        f = int(round(bin_deg / 2.5))
+        self.nb = 144 // f
+        self.pt = target144.reshape(self.nb, f, self.nb, f).sum(axis=(1, 3))
+        self.block = m // self.nb  # fine cells per bin along an axis
+        self.eps = 1e-12
+
+    def _bins(self, a):
+        return a.reshape(self.nb, self.block, self.nb, self.block).sum(axis=(1, 3))
+
+    def energy_fine(self, u):
+        return self.S @ u @ self.S.T
+
+    def loss(self, x, kappa, lam, mu=0.0):
+        u = x.reshape(self.n, self.n)
+        e = self.energy_fine(u)
+        a = -(e - e.min()) / self.kt
+        w = self.counts * np.exp(a)
+        z = w.sum()
+        pr = w / z
+        prb = self._bins(pr)
+        ce = -np.sum(self.pt * np.log(prb + self.eps))
+        ratio = self.pt / (prb + self.eps)
+        g_fine = (
+            pr
+            / self.kt
+            * (np.kron(ratio, np.ones((self.block, self.block))) - np.sum(self.pt * prb / (prb + self.eps)))
+        )
+        grad = self.S.T @ g_fine @ self.S
+        # curvature penalty
+        k_phi = self.S @ u @ self.S2.T
+        k_psi = self.S2 @ u @ self.S.T
+        v_phi = np.maximum(np.abs(k_phi) - kappa, 0.0)
+        v_psi = np.maximum(np.abs(k_psi) - kappa, 0.0)
+        pen = lam * (np.sum(v_phi**2) + np.sum(v_psi**2))
+        gp_phi = 2 * lam * v_phi * np.sign(k_phi)
+        gp_psi = 2 * lam * v_psi * np.sign(k_psi)
+        grad = grad + self.S.T @ gp_phi @ self.S2 + self.S2.T @ gp_psi @ self.S
+        if mu > 0:
+            # thin-plate smoothness: mean of U_pp^2 + U_ss^2 + 2 U_ps^2 over the fine grid
+            k_x = self.S1 @ u @ self.S1.T
+            norm = mu / k_phi.size
+            pen += norm * (np.sum(k_phi**2) + np.sum(k_psi**2) + 2 * np.sum(k_x**2))
+            grad = grad + 2 * norm * (
+                self.S.T @ k_phi @ self.S2 + self.S2.T @ k_psi @ self.S + 2 * self.S1.T @ k_x @ self.S1
+            )
+        return ce + pen, grad.ravel()
+
+    def fit(self, u0, kappa=500.0, lam=1e-7, maxiter=3000, mu=0.0):
+        res = minimize(
+            self.loss,
+            u0.ravel(),
+            args=(kappa, lam, mu),
+            jac=True,
+            method="L-BFGS-B",
+            options={"maxiter": maxiter, "maxcor": 30, "ftol": 1e-12, "gtol": 1e-9},
+        )
+        u = res.x.reshape(self.n, self.n)
+        return u - u.min(), res

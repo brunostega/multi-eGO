@@ -214,3 +214,33 @@ def test_phi_psi_proper_with_cmap_is_rejected(tmp_path):
 def test_no_cmap_without_dir(tmp_path):
     _, system = build(tmp_path, ["ALA"], None)
     assert not any(isinstance(f, openmm.CMAPTorsionForce) for f in system.getForces())
+
+
+# -------------------------------------------------------------- shipped maps
+FF_CMAP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "multi-ego-basic.ff", "cmap")
+AMINO_ACIDS = "ALA ARG ASN ASP CYS GLN GLU GLY HIS ILE LEU LYS MET PHE PRO SER THR TRP TYR VAL".split()
+
+
+def test_shipped_maps_complete_and_smooth():
+    """The force-field maps: one per amino acid, 72 x 72, 300 K, curvature below the 5 fs limit."""
+    import build_cmap
+
+    for res in AMINO_ACIDS:
+        meta, grid = C.read_cmap(os.path.join(FF_CMAP, f"{res}.cmap"))
+        assert meta["residue"] == res and grid.shape == (72, 72)
+        assert meta["temperature"].startswith("300")
+        assert grid.min() == pytest.approx(0.0, abs=1e-6)
+        assert build_cmap.max_curvature(grid) <= 550
+
+
+def test_shipped_maps_build_on_every_residue_name(tmp_path):
+    """Every amino-acid residue name of the force field finds a map (aliases and D-residues included)."""
+    import re
+
+    rtp = os.path.join(os.path.dirname(FF_CMAP), "aminoacids.rtp")
+    headers = [m.group(1) for m in re.finditer(r"^\[ (\S+) \]", open(rtp).read(), re.M)]
+    names = [h for h in headers if re.fullmatch(r"D?[A-Z]{3}2?", h) and h not in ("ACE", "NME", "NH2")]
+    assert len(names) >= 40  # 20 amino acids, CYS2, and their D forms
+    for name in names:
+        top, system = build(tmp_path, [name], FF_CMAP)
+        assert cmap_force(system).getNumTorsions() == 1, name

@@ -12,7 +12,16 @@ import pytest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "tools", "cmap_builder"))
 import build_cmap as B  # noqa: E402
-from cmap_math import KB, BicubicMap, backbone_positions, coarsen_target, node_histogram, nodes  # noqa: E402
+from cmap_math import (  # noqa: E402
+    KB,
+    BicubicMap,
+    ConstrainedFit,
+    backbone_positions,
+    coarsen_target,
+    node_histogram,
+    nodes,
+    spline_basis,
+)
 
 KT = KB * 300.0
 
@@ -62,6 +71,9 @@ def test_bicubic_map_matches_openmm():
 
 
 # ------------------------------------------------------------------ round trip
+FAST = dict(fine_deg=1.0, maxiter=800)
+
+
 def _p0(phi, psi):
     """Broad 'unbiased' density (degrees in)."""
     p, s = np.radians(phi), np.radians(psi)
@@ -90,53 +102,105 @@ def _target(density):
     return t / t.sum()
 
 
-def _check(phi, psi, grid, target, sampled_grid=None):
-    de = BicubicMap(grid).energy(phi, psi)
-    if sampled_grid is not None:
-        de = de - BicubicMap(sampled_grid).energy(phi, psi)
-    w = np.exp(-(de - de.min()) / KT)
+def _basins_close(phi, psi, grid, target, sampled_grid=None, tol=0.005):
+    w = B.reweight(phi, psi, grid, 300.0, sampled_grid)
     r = B.basin_populations(phi, psi, w)
     t = B.target_basins(target)
     for k in ("aR", "PII", "beta", "aL"):
-        assert r[k] == pytest.approx(t[k], abs=0.005), k
-    # the map equals the true correction (up to a constant) where the target has weight
+        assert r[k] == pytest.approx(t[k], abs=tol), k
+
+
+def _map_close_to_truth(grid, target, tol=0.4):
     n = grid.shape[0]
-    th = nodes(n)
-    p, s = np.meshgrid(th, th)
+    p, s = np.meshgrid(nodes(n), nodes(n))
     mask = coarsen_target(target, n) > 2e-4
-    diff = (grid - _u_true(p, s))[mask]
-    assert np.std(diff) < 0.35
+    assert np.std((grid - _u_true(p, s))[mask]) < tol
+
+
+def test_tensor_spline_equals_openmm_bicubic():
+    """The fit's linear spline model is exactly the map OpenMM applies."""
+    n = 24
+    grid = np.random.default_rng(2).normal(0, 3, (n, n))
+    pts = np.linspace(-180, 180, 97)[:-1] + 0.3
+    S = spline_basis(n, pts)
+    p, s = np.meshgrid(pts, pts)
+    np.testing.assert_allclose(S @ grid @ S.T, BicubicMap(grid).energy(p, s), atol=1e-10)
+
+
+def test_constrained_fit_gradient():
+    rng = np.random.default_rng(3)
+    phi, psi = _sample(_p0, 50_000, rng)
+    target = _target(lambda a, b: _p0(a, b) * np.exp(-_u_true(a, b) / KT))
+    cf = ConstrainedFit(phi, psi, target, n=24, fine_deg=2.5)
+    u, du = rng.normal(0, 2, (24, 24)), rng.normal(0, 1, (24, 24))
+    for kappa in (1e9, 20.0):  # without and with active curvature penalty
+        _, g = cf.loss(u.ravel(), kappa, 1e-6)
+        h = 1e-5
+        fp, _ = cf.loss((u + h * du).ravel(), kappa, 1e-6)
+        fm, _ = cf.loss((u - h * du).ravel(), kappa, 1e-6)
+        assert g @ du.ravel() == pytest.approx((fp - fm) / (2 * h), rel=1e-5)
 
 
 def test_round_trip_unbiased():
     rng = np.random.default_rng(7)
     phi, psi = _sample(_p0, 400_000, rng)
     target = _target(lambda a, b: _p0(a, b) * np.exp(-_u_true(a, b) / KT))
-    grid, info = B.fit_map(phi, psi, target, n=36, temperature=300.0, log=lambda *a: None)
-    assert info["total_variation_final"] < 0.02
-    _check(phi, psi, grid, target)
+    grid, info = B.fit_map(phi, psi, target, n=36, **FAST)
+    assert info["max_curvature"] <= 550
+    _basins_close(phi, psi, grid, target)
+    _map_close_to_truth(grid, target)
 
 
 def test_round_trip_with_sampled_map():
     """Second iteration: frames sampled with a map active; the fit must account for it."""
     rng = np.random.default_rng(8)
     n = 36
-    th = nodes(n)
-    p, s = np.meshgrid(th, th)
+    p, s = np.meshgrid(nodes(n), nodes(n))
     sampled_grid = 2.5 * np.cos(np.radians(p - 40)) * np.sin(np.radians(s))  # some earlier map
     sampled_grid -= sampled_grid.min()
     bm_s = BicubicMap(sampled_grid)
     phi, psi = _sample(lambda a, b: _p0(a, b) * np.exp(-bm_s.energy(a, b) / KT), 400_000, rng)
     target = _target(lambda a, b: _p0(a, b) * np.exp(-_u_true(a, b) / KT))
-    grid, _ = B.fit_map(phi, psi, target, n=n, temperature=300.0, sampled_map=sampled_grid, log=lambda *a: None)
-    _check(phi, psi, grid, target, sampled_grid)
+    grid, _ = B.fit_map(phi, psi, target, n=n, sampled_map=sampled_grid, **FAST)
+    _basins_close(phi, psi, grid, target, sampled_grid)
+    _map_close_to_truth(grid, target)
+
+
+def test_curvature_limit_on_sharp_target():
+    """A target with very narrow basins: the map must stay below the limit and keep the populations."""
+    rng = np.random.default_rng(11)
+    phi, psi = _sample(_p0, 400_000, rng)
+
+    def sharp(a, b):
+        da = lambda x, c: (x - c + 180) % 360 - 180  # noqa: E731
+        g1 = np.exp(-0.5 * (da(a, -65) ** 2 + da(b, 145) ** 2) / 4.0**2)  # PII, 4 deg wide
+        g2 = 0.3 * np.exp(-0.5 * (da(a, -140) ** 2 + da(b, 150) ** 2) / 6.0**2)  # beta
+        return g1 + g2 + 1e-6
+
+    target = _target(sharp)
+    grid, info = B.fit_map(phi, psi, target, n=72, max_curvature_limit=500.0, **FAST)
+    assert B.max_curvature(grid) <= 600
+    _basins_close(phi, psi, grid, target, tol=0.01)
+
+
+def test_inversion_start():
+    """The starting inversion alone already moves the frames most of the way to the target."""
+    rng = np.random.default_rng(10)
+    phi, psi = _sample(_p0, 400_000, rng)
+    target = _target(lambda a, b: _p0(a, b) * np.exp(-_u_true(a, b) / KT))
+    u0 = B.inversion(phi, psi, target, n=36)
+    t = B.target_basins(target)
+    before = B.basin_populations(phi, psi, np.ones_like(phi))
+    after = B.basin_populations(phi, psi, B.reweight(phi, psi, u0, 300.0))
+    err = lambda r: max(abs(r[k] - t[k]) for k in ("aR", "PII", "beta"))  # noqa: E731
+    assert err(after) < 0.3 * err(before)
 
 
 def test_cross_validation_reports_small_errors_on_clean_data():
     rng = np.random.default_rng(9)
     phi, psi = _sample(_p0, 400_000, rng)
     target = _target(lambda a, b: _p0(a, b) * np.exp(-_u_true(a, b) / KT))
-    cv = B.cross_validate(phi, psi, target, 300.0, n=36, iterations=20)
+    cv = B.cross_validate(phi, psi, target, 300.0, n=36, **FAST)
     assert max(cv["basin"]) < 0.01
     assert max(abs(x) for x in cv["dg"]) < 0.5
 
@@ -149,13 +213,3 @@ def test_read_rama_xvg(tmp_path):
     phi, psi = B.read_rama(str(p))
     np.testing.assert_allclose(phi, [-139.4, -54.66])
     np.testing.assert_allclose(psi, [134.75, 133.13])
-
-
-def test_first_inversion_step_alone():
-    """Without refinement, the inversion alone must already be close (smooth data)."""
-    rng = np.random.default_rng(10)
-    phi, psi = _sample(_p0, 400_000, rng)
-    target = _target(lambda a, b: _p0(a, b) * np.exp(-_u_true(a, b) / KT))
-    grid, info = B.fit_map(phi, psi, target, n=36, temperature=300.0, iterations=0, log=lambda *a: None)
-    assert info["total_variation_final"] < 0.05
-    assert info["total_variation_final"] < 0.2 * info["total_variation_initial"]

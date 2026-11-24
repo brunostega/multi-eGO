@@ -2,7 +2,8 @@
 
 Builds the backbone CMAPs (`multi-ego-basic.ff/cmap/<RES>.cmap`) that make
 blocked dipeptides (Ace-X-NMe) reproduce target Ramachandran distributions,
-by default those of Choi & Pappu, JCTC 15, 1355 (2019).
+by default those of Choi & Pappu, JCTC 15, 1355 (2019), with maps that run
+at the multi-eGO 5 fs time step.
 
 ## Workflow
 
@@ -30,52 +31,58 @@ runs and new maps.
 
 ## Method
 
-- Boltzmann inversion on bins centred on the map nodes:
-  `U = U_sampled + kT [ln(n_sim + a) - ln(N p_target + a)]`.
-- Periodic Gaussian smoothing (5 deg) and a ceiling (30 kJ/mol above the
-  minimum; regions above it hold < 0.1 % of the target).
-- Refinement by reweighting the same frames: the distribution with the map is
-  exactly `P_sim exp(-(U - U_sampled)/kT)`, with `U` evaluated exactly as
-  OpenMM evaluates it (`cmap_math.BicubicMap`, tested against OpenMM to 1e-10).
-  Corrections are computed in raw-frame units with pseudo-count `a = 20`.
-- Held-out check: maps fitted on one half of the frames are applied to the
-  other half. Reweighting the fitted frames is optimistic; with a small
-  pseudo-count and many iterations a map can fit them perfectly and still dig
-  spurious wells that a new simulation falls into. The held-out errors
-  decide the verdict in the report.
+With a map U active, the dipeptide samples exactly
+`P_sim(phi, psi) exp(-U(phi, psi)/kT)`, where P_sim comes from the run without
+a phi/psi potential. So the map is fitted on the sampled frames by
+reweighting; no new simulation is needed for the fit.
 
-## Time step: sharp maps need 2 fs
+1. Start from a smoothed Boltzmann inversion `kT ln(P_sim / P_target)`.
+2. Minimise the cross-entropy of the target against the reweighted frames
+   (5 deg bins) over the 72 x 72 node values, plus a thin-plate smoothness
+   term (`--smoothness`, default 1e-4) and a penalty on curvature above
+   `--max-curvature` (500 kJ/mol/rad^2). OpenMM's bicubic CMAP is exactly
+   the tensor-product periodic cubic spline through the nodes, so the map and
+   its derivatives on any grid are matrix products with exact gradients
+   (`cmap_math.ConstrainedFit`; verified against OpenMM to 1e-13).
+3. Held-out check: maps fitted on one half of the frames are applied to the
+   other half. This estimates what a new simulation will show, and decides
+   the verdict in the report.
 
-The Choi & Pappu targets are histograms: about 60 % of the 5 deg cells are
-empty and the tails are single counts. Fitted as they are (`--target-sigma 0`),
-the maps reproduce the targets almost exactly but reach curvatures of
-5,000-13,000 kJ/mol/rad^2 at the edges of the empty regions (the omega term
-peaks at 134). Tested on Ace-Ala-NMe (OpenMM, Langevin, 5 fs):
+The target is never smoothed. Moving whole basins up or down costs almost no
+curvature, so basin populations are fitted to the original target; only fine
+detail inside basins is traded for smoothness.
 
-| map | max curvature | 5 fs | 2 fs | basins vs target | TV@20 deg |
-|---|---|---|---|---|---|
-| no map | - | stable, 294-297 K | | | |
-| `--target-sigma 0` | 11,100 | blows up after 50-140 ps | stable, 294 K | exact | 0.008 |
-| `--target-sigma 5` | 5,500 | blows up after 250-340 ps | | | |
-| `--target-sigma 7.5 --sigma 7.5` | 2,600 | one of two seeds blows up | | | |
-| `--target-sigma 10 --sigma 10` | 1,350 | stable, 312-316 K (too hot) | | within 0.4 pt | 0.23 |
-| `--target-sigma 15 --sigma 15` | 540 | stable, 300 K | | within 1.5 pt | 0.36 |
+## Why the regularisation: the 5 fs time step
 
-So either keep sharp maps and run with a 2 fs step, or smooth the targets
-(about 15 deg) and keep 5 fs with broader basins. The report lists each map's
-maximum curvature.
+The Choi & Pappu grids are histograms: about 60 % of the 5 deg cells are
+empty and the tails are single counts. Tested on Ace-X-NMe in OpenMM
+(Langevin, 5 fs, 0.04/ps, 300 K):
 
-## Defaults and why
+| map | Ala | Asn |
+|---|---|---|
+| none | stable, 294-297 K | |
+| fit to the raw target, no regularisation (max curvature ~11,000) | blows up after 50-140 ps (stable at 2 fs) | |
+| raw target, curvature capped at 500 only | stable but 367 K; PII 52 % (target 59) | 310 K; PII 25 % (target 33) |
+| target smoothed by 15 deg | stable, 300 K | basins up to 7 points off (PII/beta boundary blurred) |
+| **thin-plate 1e-4 + cap 500 (default)** | **299 K; populations within statistical error** | **306 K; within statistical error** |
+| smooth analytic well, curvature 400 | 298 K | |
+
+The last row shows that stiffness alone is not the problem (GROMOS angle
+terms are as stiff); roughness, i.e. rapidly changing curvature, is.
+
+## Other choices
 
 | option | default | reason |
 |---|---|---|
-| `--grid` | 72 (5 deg) | the targets are sharp (half of Ala's mass in 25 cells of 5 deg); 10 deg grids fit worse at 2.5 and 10 deg resolution |
-| `--pseudo` | 20 | best held-out errors; 1 overfits badly (Ala held-out aR 4.7 % vs 10.4 %) |
-| `--umax` | 30 | same fit as 50, half the steepest gradients (~300 vs ~650 kJ/mol/rad) |
-| `--iterations` | 60 | aL converges slowly |
-| `--target-sigma` | 0 | faithful to the target; see the time-step section |
+| `--grid` | 72 (5 deg) | the targets are sharp (half of Ala's mass in 25 cells of 5 deg) |
+| `--max-curvature` | 500 | safety cap; the thin-plate term does most of the work |
+| `--smoothness` | 1e-4 | 1e-3 starts to lose populations (Asn PII -2.5 points); 1e-5 is rougher |
+
+Effective sample sizes are low by nature (Asn ~5k, Trp ~9k of 1M frames)
+because the targets are much narrower than the unbiased sampling.
 
 ## Files
 
 - `build_cmap.py`: command line tool and fit.
-- `cmap_math.py`: histograms, OpenMM-exact bicubic evaluation, geometry.
+- `cmap_math.py`: histograms, OpenMM-exact map evaluation, constrained fit,
+  geometry.
