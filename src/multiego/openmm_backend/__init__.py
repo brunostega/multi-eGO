@@ -1,39 +1,45 @@
 """
 OpenMM backend for multi-eGO models.
 
-Builds an OpenMM System from the GROMACS files that multi-eGO writes
-(``topol_mego.top`` and ``ffnonbonded.itp``). Requires OpenMM, installed with
-``pip install "mego[openmm]"`` (add ``openmm[cuda12]`` or similar for GPUs).
+- ``paramfile``: the OpenMM parameter file ``mego_params.h5`` written by
+  ``multiego.py`` (needs h5py, not OpenMM).
+- ``cmap``: backbone CMAP maps.
+- ``gromacs_reader``: strict reader of the GROMACS files multi-eGO writes.
+- ``builder``: OpenMM System from either of them (needs OpenMM, installed with
+  ``pip install "mego[openmm]"``; add ``openmm[cuda12]`` or similar for GPUs).
 
-Typical use::
+Typical use (``openmm/run.py`` does this)::
 
-    from multiego.openmm_backend import load, create_integrator
-    system, topology, positions = load("topol_mego.top", "conf.gro")
+    from multiego.openmm_backend import load_params, create_integrator
+    system, topology, positions = load_params("mego_params.h5", "conf.gro")
     integrator = create_integrator(300.0)
 """
 
 from .gromacs_reader import TopologyError, read_topology
 from .cmap import read_cmap, write_cmap
-from .builder import (
-    FORCE_GROUPS,
-    create_integrator,
-    create_system,
-    create_topology,
-    lj_tables,
-    load,
-    molecule_exclusions,
-)
 
-__all__ = [
+_BUILDER_NAMES = (
     "FORCE_GROUPS",
-    "TopologyError",
     "create_integrator",
     "create_system",
+    "create_system_from_params",
     "create_topology",
+    "create_topology_from_params",
     "lj_tables",
     "load",
+    "load_params",
     "molecule_exclusions",
-    "read_cmap",
-    "read_topology",
-    "write_cmap",
-]
+)
+
+
+def __getattr__(name):
+    # The builder needs OpenMM; import it only when one of its names is used, so
+    # that the generator can write the parameter file without OpenMM installed.
+    if name in _BUILDER_NAMES:
+        from . import builder
+
+        return getattr(builder, name)
+    raise AttributeError(name)
+
+
+__all__ = ["TopologyError", "read_cmap", "read_topology", "write_cmap", *_BUILDER_NAMES]

@@ -74,8 +74,13 @@ def read_infile(path):
 
 def read_outfile(path):
     """
-    Reads a multi-eGO output file, stripping inline comments (everything after
-    a ``;`` on each line).
+    Reads a multi-eGO output file for comparison, keeping only its content.
+
+    Inline comments (everything after a ``;``), blank lines and the amount of
+    whitespace between fields are ignored: GROMACS does not depend on them,
+    and the streamed ``[ nonbond_params ]`` writer aligns columns differently
+    from the former pandas ``to_string`` output.  The fields themselves (atom
+    names, numbers formatted as written) and the line order must match.
 
     Parameters
     ----------
@@ -85,13 +90,15 @@ def read_outfile(path):
     Returns
     -------
     out_string : str
-        The file contents with comments removed.
+        One line per non-empty content line, fields separated by one space.
     """
-    out_string = ""
+    lines = []
     with open(path) as f:
         for line in f:
-            out_string += line.split(";")[0] if ";" in line else line
-    return out_string
+            content = " ".join(line.split(";")[0].split())
+            if content:
+                lines.append(content)
+    return "\n".join(lines)
 
 
 def prep_system_data(name, index):

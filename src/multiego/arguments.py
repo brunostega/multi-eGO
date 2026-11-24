@@ -55,6 +55,14 @@ _args_dict_shared = {
         "type": str,
         "help": "Configuration file for the system",
     },
+    "--backend": {
+        "default": "both",
+        "type": str,
+        "choices": ["openmm", "gromacs", "both"],
+        "help": "Output format of the force field. openmm: mego_params.h5 (OpenMM parameter file, run with "
+        "openmm/run.py); gromacs: ffnonbonded.itp + topol_mego.top; both (default). The GROMACS files are still "
+        "needed by cmdata/make_mat and as reference topology in production runs.",
+    },
     "--backbone": {
         "default": "gromos",
         "type": str,
@@ -62,6 +70,12 @@ _args_dict_shared = {
         "help": "Backbone phi/psi potential. gromos: keep the GROMOS phi and psi proper dihedrals. "
         "cmap: remove every phi (C-N-CA-C) and psi (N-CA-C-N) proper dihedral; the phi/psi "
         "potential is then provided by CMAP maps (OpenMM backend), or absent in GROMACS.",
+    },
+    "--cmap_dir": {
+        "default": None,
+        "type": str,
+        "help": "Directory with the backbone CMAPs (<RES>.cmap) used with --backbone cmap in the OpenMM output. "
+        "Default: multi-ego-basic.ff/cmap.",
     },
     "--outputs_dir": {
         "default": None,
@@ -268,6 +282,8 @@ def validate_args(args):
                 f"--epsilon ({ref['epsilon']}) must be greater-equal than epsilon_min ({config.epsilon_min})"
             )
 
+    if getattr(args, "backend", "both") not in ("openmm", "gromacs", "both"):
+        raise ValueError(f"--backend must be 'openmm', 'gromacs' or 'both', got {args.backend!r}")
     if getattr(args, "backbone", "gromos") not in ("gromos", "cmap"):
         raise ValueError(f"--backbone must be 'gromos' or 'cmap', got {args.backbone!r}")
 

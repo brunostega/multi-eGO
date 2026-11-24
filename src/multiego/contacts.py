@@ -350,7 +350,9 @@ def initialize_molecular_contacts(contact_matrix, prior_matrix, args, reference)
     """
     # use prior matrix learned flag by matching everywhere contact matrix is not H (cutoff=0)
     contact_matrix.loc[contact_matrix["cutoff"] != 0, "learned"] = prior_matrix["rc_learned"].to_numpy()
-    contact_matrix["reference"] = reference["reference"]
+    # One name repeated on every row (~10^6 rows): store it as a categorical
+    # (one integer per row) rather than as one Python string per row.
+    contact_matrix["reference"] = pd.Categorical([reference["reference"]] * len(contact_matrix))
 
     p_sort = np.sort(contact_matrix["probability"].loc[contact_matrix["learned"]].to_numpy())[::-1]
     norm = np.sum(p_sort)
