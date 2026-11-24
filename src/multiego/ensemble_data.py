@@ -76,8 +76,9 @@ def _build_bonded_interactions(topology, backbone="gromos"):
     topology : parmed.Structure
         Loaded GROMACS topology.
     backbone : {"gromos", "cmap"}
-        With "cmap", every backbone phi/psi proper dihedral is dropped
-        (see ``topology.is_backbone_phi_psi``).
+        With "cmap", the backbone phi/psi proper dihedrals of the residues that
+        receive a CMAP are dropped (see ``topology.is_backbone_phi_psi`` and
+        ``topology.cmap_residues``); chain termini keep theirs.
 
     Returns
     -------
@@ -99,7 +100,14 @@ def _build_bonded_interactions(topology, backbone="gromos"):
     for molecule, topol in topology.molecules.items():
         dihedrals = topol[0].dihedrals
         if backbone == "cmap":
-            kept = [d for d in dihedrals if not _topology.is_backbone_phi_psi(d)]
+            # only residues that get a CMAP lose their phi/psi; chain termini
+            # keep the GROMOS torsion they have (first residue psi, last phi)
+            with_cmap = _topology.cmap_residues(topol[0])
+            kept = [
+                d
+                for d in dihedrals
+                if not (_topology.is_backbone_phi_psi(d) and _topology.phi_psi_residue(d) in with_cmap)
+            ]
             print(
                 f"  {molecule}: removed {len(dihedrals) - len(kept)} backbone phi/psi dihedral terms (--backbone cmap)"
             )

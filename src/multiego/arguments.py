@@ -68,8 +68,9 @@ _args_dict_shared = {
         "type": str,
         "choices": ["gromos", "cmap"],
         "help": "Backbone phi/psi potential. gromos: keep the GROMOS phi and psi proper dihedrals. "
-        "cmap: remove every phi (C-N-CA-C) and psi (N-CA-C-N) proper dihedral; the phi/psi "
-        "potential is then provided by CMAP maps (OpenMM backend), or absent in GROMACS.",
+        "cmap: remove the phi (C-N-CA-C) and psi (N-CA-C-N) proper dihedrals of every residue that "
+        "receives a CMAP (all but the chain termini, which keep their GROMOS torsion); the phi/psi "
+        "potential is then provided by the CMAPs (OpenMM output), or absent in GROMACS.",
     },
     "--cmap_dir": {
         "default": None,

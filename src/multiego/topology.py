@@ -145,6 +145,46 @@ def is_backbone_phi_psi(dihedral):
     return False
 
 
+def cmap_residues(structure):
+    """
+    Indices of the residues that receive a backbone CMAP: residues with atoms
+    N, CA and C whose N is bonded to an atom C of another residue and whose C
+    is bonded to an atom N of another residue (the same rule as
+    ``openmm_backend.cmap.backbone_quintuplets``). Chain termini do not
+    qualify: the first residue has no phi, the last no psi.
+
+    Parameters
+    ----------
+    structure : parmed.Structure
+        One molecule.
+
+    Returns
+    -------
+    set of int
+        ``residue.idx`` values.
+    """
+    out = set()
+    for residue in structure.residues:
+        names = {a.name: a for a in residue.atoms}
+        if not all(x in names for x in ("N", "CA", "C")):
+            continue
+        n, c = names["N"], names["C"]
+        prev = [b for b in n.bond_partners if b.name == "C" and b.residue.idx != residue.idx]
+        nxt = [b for b in c.bond_partners if b.name == "N" and b.residue.idx != residue.idx]
+        if len(prev) == 1 and len(nxt) == 1:
+            out.add(residue.idx)
+    return out
+
+
+def phi_psi_residue(dihedral):
+    """Residue index a backbone phi or psi belongs to (the residue of its N, CA, C)."""
+    atoms = [dihedral.atom1, dihedral.atom2, dihedral.atom3, dihedral.atom4]
+    for a in atoms:
+        if a.name == "CA":
+            return a.residue.idx
+    return None
+
+
 def get_dihedrals(topology):
     """
     Extracts dihedral angles information from a molecular topology.
