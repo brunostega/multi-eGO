@@ -1,10 +1,10 @@
 from . import type_definitions
-from . import mg
 from . import bonded
 from . import _term
 from .model_config import config
 from . import fileio
 
+import gc
 import numpy as np
 import pandas as pd
 import itertools
@@ -224,6 +224,11 @@ def apply_symmetries(meGO_ensemble, meGO_input, symmetry):
     return tmp_df
 
 
+# Number of rows of a contact matrix annotated at once by init_LJ_datasets.
+# Only affects memory use (and very slightly speed), never the result.
+ANNOTATION_ROWS = 250_000
+
+
 def init_LJ_datasets(meGO_ensemble, matrices, args):
     """
     Assembles the full training dataset by merging train/reference contact matrices
@@ -234,7 +239,9 @@ def init_LJ_datasets(meGO_ensemble, matrices, args):
     meGO_ensemble : dict
         The initialized meGO ensemble.
     matrices : dict
-        Contains 'reference_matrices' and 'train_matrices'.
+        Contains 'reference_matrices' and 'train_matrices'.  The matrices are
+        removed from these dicts as soon as they have been used, to release
+        their memory.
     args : argparse.Namespace
         Parsed command-line arguments.
 
@@ -242,6 +249,9 @@ def init_LJ_datasets(meGO_ensemble, matrices, args):
     -------
     train_dataset : pd.DataFrame
         Fully assembled and annotated training dataset ready for generate_LJ.
+        Only the rows with ``learned == 1`` are returned: they are the only
+        ones generate_LJ uses, and keeping the others would need memory
+        proportional to (number of matrices) x N^2.
     """
     td_fields = [
         "molecule_name_ai",
@@ -264,6 +274,17 @@ def init_LJ_datasets(meGO_ensemble, matrices, args):
         "rc_probability",
         "learned",
     ]
+
+    # Inputs of the row-wise annotation that do not depend on the chunk.
+    all_bd = bonded.generate_bond_distance_data(meGO_ensemble)
+    rule_tables = _special_rule_tables(meGO_ensemble)
+    c12_table = _nthbond_c12_table(meGO_ensemble)
+
+    # A reference matrix can serve several training matrices: count its uses
+    # so that it is freed after the last one.
+    remaining_uses = {}
+    for _, ref_name in meGO_ensemble.train_matrix_tuples:
+        remaining_uses[ref_name] = remaining_uses.get(ref_name, 0) + 1
 
     chunks = []
     for name, ref_name in meGO_ensemble.train_matrix_tuples:
@@ -308,17 +329,134 @@ def init_LJ_datasets(meGO_ensemble, matrices, args):
                 f"Mismatched indices: {diff_indices}"
             )
 
-        chunks.append(temp_merged[td_fields])
+        # All further processing is row by row: do it on slices of
+        # ANNOTATION_ROWS rows and keep only the rows generate_LJ uses
+        # (learned == 1).  Every row is still validated (see
+        # _annotate_training_chunk), but neither the annotated copy of the
+        # whole matrix nor the concatenation of all matrices -- several times
+        # N^2 rows for a protein of N atoms -- is ever built.
+        for start in range(0, len(temp_merged), ANNOTATION_ROWS):
+            stop = start + ANNOTATION_ROWS
+            piece = temp_merged.iloc[start:stop][td_fields]
+            piece = _annotate_training_chunk(meGO_ensemble, piece, all_bd, rule_tables, c12_table)
+            chunks.append(piece.loc[piece["learned"] == 1])
+        del temp_merged
+
+        # Free the input matrices after their last use.
+        del matrices["train_matrices"][name]
+        remaining_uses[ref_name] -= 1
+        if remaining_uses[ref_name] == 0:
+            del matrices["reference_matrices"][ref_name]
+        gc.collect()
 
     train_dataset = (
         pd.concat(chunks, axis=0, sort=False, ignore_index=True) if chunks else pd.DataFrame(columns=td_fields)
     )
+    for col in ("molecule_name_ai", "molecule_name_aj", "source", "ai", "aj"):
+        train_dataset[col] = train_dataset[col].astype("category")
+    return train_dataset
 
+
+def _special_rule_tables(meGO_ensemble):
+    """
+    Lookup tables of the special non-local (mg prior) rules, indexed by an
+    integer code of the chemical atom type.
+
+    The naive approach iterates over every rule, computes a boolean mask by
+    scanning type_ai/type_aj for each (type_i, type_j) pair (186 scans total),
+    then writes results with .loc -- slow for large datasets.  Instead we build
+    tiny 2D lookup tables indexed by integer atom-type codes, so that a single
+    vectorised fancy-index gives the per-row rule outcome.
+
+    Returns
+    -------
+    dict
+        ``type_to_code`` (types absent from the rules get code 0, "no rule
+        applies") and the ``outcome``, ``epsilon`` and ``sigma`` tables.
+    """
+    # --- Step 1: assign a small integer code to every atom type in the rules ---
+    all_rule_types = sorted(
+        {atomtype for rule in type_definitions.special_non_local for side in rule["atomtypes"] for atomtype in side}
+    )
+    type_to_code = {atomtype: code for code, atomtype in enumerate(all_rule_types, start=1)}
+    n_codes = len(all_rule_types) + 1  # +1 for the 0 sentinel
+
+    # --- Step 2: fill the lookup tables (one entry per ordered type pair) ---
+    # Rule-outcome codes (int8 to keep the tables tiny): see RULE_* below.
+    lut_outcome = np.zeros((n_codes, n_codes), dtype=np.int8)
+    lut_epsilon = np.full((n_codes, n_codes), np.nan)
+    lut_sigma = np.full((n_codes, n_codes), np.nan)
+
+    for rule in type_definitions.special_non_local:
+        types_i, types_j = rule["atomtypes"]
+        epsilon = rule["epsilon"]
+        sigma = rule.get("sigma")
+        if rule["interaction"] == "rep":
+            outcome = RULE_REP_FIXED if epsilon is not None else RULE_REP_NONE
+        else:
+            outcome = RULE_ATT
+        for ti in types_i:
+            for tj in types_j:
+                for ci, cj in ((type_to_code[ti], type_to_code[tj]), (type_to_code[tj], type_to_code[ti])):
+                    lut_outcome[ci, cj] = outcome
+                    lut_epsilon[ci, cj] = epsilon if epsilon is not None else np.nan
+                    lut_sigma[ci, cj] = sigma if sigma is not None else np.nan
+    return {"type_to_code": type_to_code, "outcome": lut_outcome, "epsilon": lut_epsilon, "sigma": lut_sigma}
+
+
+# Rule-outcome codes of _special_rule_tables:
+#   1 = repulsive with a fixed epsilon value
+#   2 = repulsive, derive mg parameters from the existing rep (epsilon=None)
+#   3 = attractive
+RULE_REP_FIXED, RULE_REP_NONE, RULE_ATT = np.int8(1), np.int8(2), np.int8(3)
+
+
+def _nthbond_c12_table(meGO_ensemble):
+    """
+    Default repulsive c12 of every pair of chemical types, from
+    ``type_definitions._c12_df`` (0 where the pair is not listed).
+
+    Replaces the former per-row ``type_pair`` strings ("CH2_O"): the value is
+    looked up in a small (types x types) table indexed by integer type codes.
+    Where the file lists a pair in both orders with different values, the
+    first occurrence wins, as before (both "atp1_atp2" and then "atp2_atp1"
+    keys were collected and the first duplicate was kept).
+
+    Returns
+    -------
+    dict
+        ``type_to_code`` and the ``c12`` table.
+    """
+    types = sorted(set(meGO_ensemble.sbtype_type_dict.values()))
+    type_to_code = {t: k for k, t in enumerate(types)}
+    # One extra row/column of zeros (code len(types)) for unknown types.
+    table = np.zeros((len(types) + 1, len(types) + 1))
+    seen = np.zeros(table.shape, dtype=bool)
+    df = type_definitions._c12_df
+    # Same precedence as the former lookup: all (atp1, atp2) keys first, then
+    # all (atp2, atp1) keys, the first occurrence of a key winning.
+    for first, second in (("atp1", "atp2"), ("atp2", "atp1")):
+        for t1, t2, c12 in zip(df[first], df[second], df["c12"]):
+            if t1 in type_to_code and t2 in type_to_code:
+                i, j = type_to_code[t1], type_to_code[t2]
+                if not seen[i, j]:
+                    table[i, j], seen[i, j] = c12, True
+    return {"type_to_code": type_to_code, "c12": table}
+
+
+def _annotate_training_chunk(meGO_ensemble, train_dataset, all_bd, rule_tables, c12_table):
+    """
+    Row-wise annotation of one merged training/reference contact matrix:
+    bond distances, default repulsion, mg sigma/epsilon and the special
+    non-local rules, followed by the consistency check of the input cutoffs.
+
+    Every operation is row-wise, so annotating each matrix separately gives
+    the same rows as annotating their concatenation.
+    """
+    train_dataset = train_dataset.copy()
     train_dataset["molecule_name_ai"] = train_dataset["molecule_name_ai"].astype("category")
     train_dataset["molecule_name_aj"] = train_dataset["molecule_name_aj"].astype("category")
     train_dataset["source"] = train_dataset["source"].astype("category")
-
-    all_bd = bonded.generate_bond_distance_data(meGO_ensemble)
 
     train_dataset = pd.merge(
         train_dataset,
@@ -335,35 +473,19 @@ def init_LJ_datasets(meGO_ensemble, matrices, args):
     train_dataset = train_dataset[
         ~((train_dataset["same_chain"]) & (train_dataset["bond_distance"] <= config.bond14_separation))
     ]
-    train_dataset.reset_index(inplace=True)
+    train_dataset = train_dataset.reset_index(drop=True)
 
-    # default repulsive C12
-    train_dataset["rep"] = np.sqrt(
-        train_dataset["ai"].map(meGO_ensemble.sbtype_c12_dict) * train_dataset["aj"].map(meGO_ensemble.sbtype_c12_dict)
-    )
-    train_dataset["type_pair"] = (
-        train_dataset["ai"].map(meGO_ensemble.sbtype_type_dict)
-        + "_"
-        + train_dataset["aj"].map(meGO_ensemble.sbtype_type_dict)
-    )
+    type_ai = train_dataset["ai"].map(meGO_ensemble.sbtype_type_dict)
+    type_aj = train_dataset["aj"].map(meGO_ensemble.sbtype_type_dict)
 
-    # Build a lookup that covers both "atp1_atp2" and "atp2_atp1" orderings
-    c12_lookup = pd.concat(
-        [
-            type_definitions._c12_df.set_index(
-                type_definitions._c12_df["atp1"] + "_" + type_definitions._c12_df["atp2"]
-            )["c12"],
-            type_definitions._c12_df.set_index(
-                type_definitions._c12_df["atp2"] + "_" + type_definitions._c12_df["atp1"]
-            )["c12"],
-        ]
-    )
-    # if a pair appears in both directions with different values, keep one consistently
-    c12_lookup = c12_lookup[~c12_lookup.index.duplicated(keep="first")]
-
-    # vectorized replace: use matched c12 where found, else keep existing rep
-    train_dataset["rep"] = train_dataset["type_pair"].map(c12_lookup).fillna(0)
-    # print(train_dataset[["ai", "aj", "type_pair", "rep"]].head(10))
+    # default repulsive C12: data-driven value of the pair of chemical types,
+    # 0 where the pair is not listed (such rows are removed below).
+    code = c12_table["type_to_code"]
+    unknown = len(code)  # zero row/column of the table
+    train_dataset["rep"] = c12_table["c12"][
+        type_ai.map(code).fillna(unknown).to_numpy(dtype=np.intp),
+        type_aj.map(code).fillna(unknown).to_numpy(dtype=np.intp),
+    ]
 
     # default (mg) sigma
     pairwise_mg_sigma = (
@@ -389,73 +511,26 @@ def init_LJ_datasets(meGO_ensemble, matrices, args):
     )
     train_dataset["mg_epsilon"] = pairwise_mg_epsilon
 
-    # Apply special non-local interaction rules from type_definitions.
-    #
-    # The naive approach iterates over every rule, computes a boolean mask by
-    # scanning type_ai/type_aj for each (type_i, type_j) pair (186 scans total),
-    # then writes results with .loc — slow for large datasets.
-    #
-    # Instead we build two tiny 2D lookup tables indexed by integer atom-type
-    # codes, do a single vectorised fancy-index to get the per-row rule outcome,
-    # then apply all updates with np.where on bare numpy arrays.
+    # Apply the special non-local interaction rules (see _special_rule_tables).
+    # --- encode every row's ai/aj type as an integer code ---
+    type_to_code = rule_tables["type_to_code"]
+    ai_codes = type_ai.map(type_to_code).fillna(0).to_numpy(dtype=np.intp)
+    aj_codes = type_aj.map(type_to_code).fillna(0).to_numpy(dtype=np.intp)
 
-    # --- Step 1: assign a small integer code to every atom type in the rules ---
-    # Types absent from the rules get code 0 ("no rule applies").
-    all_rule_types = sorted(
-        {atomtype for rule in type_definitions.special_non_local for side in rule["atomtypes"] for atomtype in side}
-    )
-    type_to_code = {atomtype: code for code, atomtype in enumerate(all_rule_types, start=1)}
-    n_codes = len(all_rule_types) + 1  # +1 for the 0 sentinel
+    # --- single vectorised lookup: one numpy fancy-index per table ---
+    row_outcome = rule_tables["outcome"][ai_codes, aj_codes]
+    row_epsilon = rule_tables["epsilon"][ai_codes, aj_codes]
+    row_sigma = rule_tables["sigma"][ai_codes, aj_codes]
 
-    # Rule-outcome codes (int8 to keep the tables tiny):
-    #   1 = repulsive with a fixed epsilon value
-    #   2 = repulsive, derive mg parameters from the existing rep (epsilon=None)
-    #   3 = attractive
-    REP_FIXED, REP_NONE, ATT = np.int8(1), np.int8(2), np.int8(3)
-
-    # --- Step 2: fill the lookup tables (one entry per ordered type pair) ---
-    lut_outcome = np.zeros((n_codes, n_codes), dtype=np.int8)
-    lut_epsilon = np.full((n_codes, n_codes), np.nan)
-    lut_sigma = np.full((n_codes, n_codes), np.nan)
-
-    for rule in type_definitions.special_non_local:
-        types_i, types_j = rule["atomtypes"]
-        epsilon = rule["epsilon"]
-        sigma = rule.get("sigma")
-        if rule["interaction"] == "rep":
-            outcome = REP_FIXED if epsilon is not None else REP_NONE
-        else:
-            outcome = ATT
-        for ti in types_i:
-            for tj in types_j:
-                for ci, cj in ((type_to_code[ti], type_to_code[tj]), (type_to_code[tj], type_to_code[ti])):
-                    lut_outcome[ci, cj] = outcome
-                    lut_epsilon[ci, cj] = epsilon if epsilon is not None else np.nan
-                    lut_sigma[ci, cj] = sigma if sigma is not None else np.nan
-
-    # --- Step 3: encode every row's ai/aj type string as an integer code ---
-    # Two chained pandas .map() calls; no Python loop over rows.
-    ai_codes = (
-        train_dataset["ai"].map(meGO_ensemble.sbtype_type_dict).map(type_to_code).fillna(0).to_numpy(dtype=np.intp)
-    )
-    aj_codes = (
-        train_dataset["aj"].map(meGO_ensemble.sbtype_type_dict).map(type_to_code).fillna(0).to_numpy(dtype=np.intp)
-    )
-
-    # --- Step 4: single vectorised lookup — one numpy fancy-index per table ---
-    row_outcome = lut_outcome[ai_codes, aj_codes]
-    row_epsilon = lut_epsilon[ai_codes, aj_codes]
-    row_sigma = lut_sigma[ai_codes, aj_codes]
-
-    # --- Step 5: apply all rule outcomes in one pass with np.where on numpy arrays ---
+    # --- apply all rule outcomes in one pass with np.where on numpy arrays ---
     # Working on raw arrays avoids the per-call pandas alignment overhead of .loc.
     rep = train_dataset["rep"].to_numpy(dtype=float)
     mg_epsilon = train_dataset["mg_epsilon"].to_numpy(dtype=float)
     mg_sigma = train_dataset["mg_sigma"].to_numpy(dtype=float)
 
-    is_rep_fixed = row_outcome == REP_FIXED
-    is_rep_none = row_outcome == REP_NONE
-    is_att = row_outcome == ATT
+    is_rep_fixed = row_outcome == RULE_REP_FIXED
+    is_rep_none = row_outcome == RULE_REP_NONE
+    is_att = row_outcome == RULE_ATT
 
     # repulsive, fixed epsilon: override rep, mg_epsilon, and mg_sigma
     rep = np.where(is_rep_fixed, row_epsilon, rep)
@@ -494,7 +569,70 @@ def _add_c6_c12(df):
     df["c12"] = np.where(df["epsilon"] < 0.0, -df["epsilon"], 4 * df["epsilon"] * df["sigma"] ** 12)
 
 
-def generate_LJ(meGO_ensemble, train_dataset, parameters):
+def resolve_overrides(meGO_LJ, prior):
+    """
+    Reduce the learned interactions to one row per unordered atom pair, i.e.
+    the overrides of the mg prior.
+
+    This reproduces the former merge of the learned interactions with the
+    fully expanded mg prior (concatenate, symmetrize, sort by
+    ``learned`` (descending) then ``sigma``, keep the first row per pair, then
+    keep one orientation per pair) without expanding the prior:
+
+    * among the learned rows of a pair (both orientations) the same row wins;
+    * a row with ``learned = 1`` always beats the prior;
+    * a row with ``learned = 0`` beats the prior only if its sigma is not
+      larger than the prior sigma (on a tie the learned row is kept, as it
+      came first in the former concatenation); otherwise it is dropped so
+      that the prior applies;
+    * of the two orientations (ai, aj)/(aj, ai) the one with ai <= aj
+      (string order) is kept, as the former ``sort_LJ`` did.
+
+    Parameters
+    ----------
+    meGO_LJ : pd.DataFrame
+        Learned interactions (columns ai, aj, learned, sigma, epsilon, ...).
+    prior : nonbonded.TypePrior
+        The mg prior.  Its ``chem_of`` lookup is provided through the
+        ``sb_chem`` mapping attached by ``mg.generate_MG_prior``.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per unordered atom pair.
+    """
+    meGO_LJ = meGO_LJ.copy()
+    for col in ("ai", "aj", "molecule_name_ai", "molecule_name_aj"):
+        meGO_LJ[col] = meGO_LJ[col].astype(str)
+
+    # Symmetrize
+    inverse_meGO_LJ = meGO_LJ.rename(
+        columns={
+            "ai": "aj",
+            "aj": "ai",
+            "molecule_name_ai": "molecule_name_aj",
+            "molecule_name_aj": "molecule_name_ai",
+        }
+    )
+    meGO_LJ = pd.concat([meGO_LJ, inverse_meGO_LJ], axis=0, sort=False, ignore_index=True)
+    meGO_LJ.sort_values(by=["ai", "aj", "learned", "sigma"], ascending=[True, True, False, True], inplace=True)
+    meGO_LJ = meGO_LJ.drop_duplicates(subset=["ai", "aj"], keep="first")
+    meGO_LJ = meGO_LJ.loc[meGO_LJ["ai"] <= meGO_LJ["aj"]]
+
+    # Non-learned rows compete with the prior on sigma.
+    if (meGO_LJ["learned"] == 0).any():
+        a = prior.index(meGO_LJ["ai"].map(prior.sb_chem))
+        b = prior.index(meGO_LJ["aj"].map(prior.sb_chem))
+        prior_wins = (
+            (meGO_LJ["learned"].to_numpy() == 0)
+            & prior.has_rule[a, b]
+            & (prior.sigma[a, b] < meGO_LJ["sigma"].to_numpy())
+        )
+        meGO_LJ = meGO_LJ.loc[~prior_wins]
+    return meGO_LJ.reset_index(drop=True)
+
+
+def generate_LJ(meGO_ensemble, train_dataset, parameters, prior):
     """
     Generates production LJ interactions from the training dataset.
 
@@ -506,11 +644,15 @@ def generate_LJ(meGO_ensemble, train_dataset, parameters):
         Output of init_LJ_datasets.
     parameters : argparse.Namespace
         Parsed command-line arguments.
+    prior : nonbonded.TypePrior
+        The molten-globule prior (``mg.generate_MG_prior``); learned
+        interactions override it.
 
     Returns
     -------
     meGO_LJ : pd.DataFrame
-        Non-bonded LJ interactions for ffnonbonded.itp.
+        Learned non-bonded LJ interactions, one row per atom pair: the sparse
+        overrides of the mg prior (see ``nonbonded.NonbondedModel``).
     meGO_LJ_14 : pd.DataFrame
         1-4 LJ interactions for the topology pairs section.
     stat_str : str
@@ -628,29 +770,11 @@ def generate_LJ(meGO_ensemble, train_dataset, parameters):
             meGO_LJ_14 = pd.concat([meGO_LJ_14, split_ii], axis=0, sort=False, ignore_index=True)
             meGO_LJ = meGO_LJ.loc[(~meGO_LJ["same_chain"])]
 
-        # Add MG prior interactions for pairs not learned in any other way
-        needed_fields_mg = [f for f in needed_fields if f not in {"sigma_prior", "epsilon_prior"}]
-        basic_LJ = mg.generate_MG_LJ(meGO_ensemble)[needed_fields_mg]
-        meGO_LJ = pd.concat([meGO_LJ, basic_LJ])
-
-        # Symmetrize
-        inverse_meGO_LJ = meGO_LJ.rename(
-            columns={
-                "ai": "aj",
-                "aj": "ai",
-                "molecule_name_ai": "molecule_name_aj",
-                "molecule_name_aj": "molecule_name_ai",
-            }
-        )
-        meGO_LJ = pd.concat([meGO_LJ, inverse_meGO_LJ], axis=0, sort=False, ignore_index=True)
-
-        meGO_LJ["ai"] = meGO_LJ["ai"].astype("category")
-        meGO_LJ["aj"] = meGO_LJ["aj"].astype("category")
-        meGO_LJ["molecule_name_ai"] = meGO_LJ["molecule_name_ai"].astype("category")
-        meGO_LJ["molecule_name_aj"] = meGO_LJ["molecule_name_aj"].astype("category")
-
-        meGO_LJ.sort_values(by=["ai", "aj", "learned", "sigma"], ascending=[True, True, False, True], inplace=True)
-        meGO_LJ = meGO_LJ.drop_duplicates(subset=["ai", "aj"], keep="first")
+        # The MG prior interactions are NOT expanded here (that would be an
+        # N x N DataFrame): the learned interactions become sparse overrides
+        # of the type-level prior, combined at writing time
+        # (nonbonded.NonbondedModel).
+        meGO_LJ = resolve_overrides(meGO_LJ, prior)
 
         _add_c6_c12(meGO_LJ)
         _add_c6_c12(meGO_LJ_14)
