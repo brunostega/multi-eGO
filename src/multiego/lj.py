@@ -70,6 +70,15 @@ def set_sig_epsilon(meGO_LJ, parameters):
     assigned when training probability is above MD threshold but below the attractive
     threshold. 1-4 interactions are always kept repulsive.
 
+    With x = ln(p_MD / max(p_RC, p_RC^th)) / ln(1 / p_RC^th) and eps_p the
+    prior energy (0 for repulsive priors), the attractive epsilon is
+    eps_p + (eps_0 - eps_p) * x (``--reweighting interpolate``, between the
+    prior and eps_0) or eps_p + eps_0 * x (``--reweighting additive``, eps_0
+    is the largest energy added to the prior). It is attractive when it
+    exceeds epsilon_min; otherwise (training above its threshold, RC above the
+    MD threshold) the contact is repulsive with c12 = rep (d_MD / d_RC)^12,
+    clipped to [0.05, 2] rep, for both rules.
+
     Parameters
     ----------
     meGO_LJ : pd.DataFrame
@@ -98,10 +107,16 @@ def set_sig_epsilon(meGO_LJ, parameters):
         meGO_LJ["probability"]
         > meGO_LJ["limit_rc_att"] * np.maximum(meGO_LJ["rc_probability"], meGO_LJ["rc_threshold"])
     ) & (meGO_LJ["probability"] > meGO_LJ["md_threshold"])
+    # slope: 'interpolate' -> eps between eps_prior and eps_0; 'additive' -> eps_0 is the largest
+    # energy added to the prior (the thresholds of contacts.initialize_molecular_contacts match the rule)
+    if getattr(parameters, "reweighting", "interpolate") == "additive":
+        scale = meGO_LJ["epsilon_0"]
+    else:
+        scale = meGO_LJ["epsilon_0"] - eps_prior_pos
     with np.errstate(divide="ignore"):
-        meGO_LJ.loc[condition, "epsilon"] = eps_prior_pos - (
-            (meGO_LJ["epsilon_0"] - eps_prior_pos) / np.log(meGO_LJ["rc_threshold"])
-        ) * (np.log(meGO_LJ["probability"] / (np.maximum(meGO_LJ["rc_probability"], meGO_LJ["rc_threshold"]))))
+        meGO_LJ.loc[condition, "epsilon"] = eps_prior_pos - (scale / np.log(meGO_LJ["rc_threshold"])) * (
+            np.log(meGO_LJ["probability"] / (np.maximum(meGO_LJ["rc_probability"], meGO_LJ["rc_threshold"])))
+        )
     meGO_LJ.loc[condition, "learned"] = 1
     meGO_LJ.loc[condition, "sigma"] = meGO_LJ["distance"] / 2.0 ** (1.0 / 6.0)
 
@@ -657,6 +672,68 @@ def resolve_overrides(meGO_LJ, prior):
     return meGO_LJ.reset_index(drop=True)
 
 
+# --hbond: polar backbone pairs whose non-local contacts describe the hydrogen
+# bond itself (H-O directly, N-O on the heavy atoms). They are not learned
+# between atoms >= min_residue_separation residues apart or on different
+# chains: the hydrogen-bond term describes them, and learning them would put
+# the hydrogen bond back into the isotropic matrix.
+HBOND_FROZEN_PAIRS = (("H", "O"), ("N", "O"))
+
+
+def _hbond_frozen_classes(meGO_LJ, prior):
+    """
+    For ``--hbond``: per row, whether the pair is one of HBOND_FROZEN_PAIRS of
+    backbone atoms (by backbone role, see ``multiego.hbond``).
+    """
+    from . import hbond
+
+    role_i = meGO_LJ["ai"].astype(str).map(prior.sb_role).fillna(0).to_numpy(dtype=np.intp)
+    role_j = meGO_LJ["aj"].astype(str).map(prior.sb_role).fillna(0).to_numpy(dtype=np.intp)
+    out = np.zeros(len(meGO_LJ), dtype=bool)
+    for a, b in HBOND_FROZEN_PAIRS:
+        ra, rb = hbond.ROLE_INDEX[a], hbond.ROLE_INDEX[b]
+        out |= ((role_i == ra) & (role_j == rb)) | ((role_i == rb) & (role_j == ra))
+    return out
+
+
+def _hbond_frozen_mask(meGO_LJ, prior, sb_resnum, min_residue_separation):
+    """
+    Rows that must not be learned with ``--hbond``: HBOND_FROZEN_PAIRS between
+    different chains, or on the same chain at least ``min_residue_separation``
+    residues apart.
+    """
+    cls = _hbond_frozen_classes(meGO_LJ, prior)
+    res_i = meGO_LJ["ai"].astype(str).map(sb_resnum).to_numpy(dtype=float)
+    res_j = meGO_LJ["aj"].astype(str).map(sb_resnum).to_numpy(dtype=float)
+    far = np.abs(res_i - res_j) >= min_residue_separation
+    return cls & ((~meGO_LJ["same_chain"].astype(bool).to_numpy()) | far)
+
+
+def _hbond_prior_companions(meGO_LJ, prior):
+    """
+    Intermolecular prior rows for the learned local (same chain, < min
+    separation) H-O / N-O contacts. A learned intramolecular entry without an
+    intermolecular one would be written in the matrix and apply between chains
+    too (the sb_type pair is shared by the copies); with this companion row the
+    learned value goes to ``[ pairs ]`` and the matrix keeps the prior.
+    """
+    local = meGO_LJ.loc[_hbond_frozen_classes(meGO_LJ, prior) & meGO_LJ["same_chain"].astype(bool).to_numpy()]
+    if local.empty:
+        return local
+    comp = local.copy()
+    roles_i = comp["ai"].astype(str).map(prior.sb_role).to_numpy(dtype=np.intp)
+    roles_j = comp["aj"].astype(str).map(prior.sb_role).to_numpy(dtype=np.intp)
+    c12 = prior.backbone_c12[roles_i, roles_j]
+    comp["same_chain"] = False
+    comp["learned"] = 0
+    comp["source"] = "mg"
+    comp["probability"] = 0.0
+    comp["rc_probability"] = 0.0
+    comp["epsilon"] = -c12
+    comp["sigma"] = c12 ** (1 / 12) / 2 ** (1 / 6)
+    return comp
+
+
 def generate_LJ(meGO_ensemble, train_dataset, parameters, prior):
     """
     Generates production LJ interactions from the training dataset.
@@ -686,6 +763,18 @@ def generate_LJ(meGO_ensemble, train_dataset, parameters, prior):
     st = time.time()
     _term.sub("Set sigma and epsilon")
     meGO_LJ = train_dataset[train_dataset["learned"] == 1].copy()
+
+    hbond_freeze = getattr(prior, "backbone_c12", None) is not None
+    if hbond_freeze:
+        from .hbond import HBondSettings
+
+        settings = HBondSettings.from_args(parameters)
+        min_sep = settings.min_residue_separation if settings is not None else 3
+        top = meGO_ensemble.topology_dataframe
+        sb_resnum = dict(zip(top["sb_type"].astype(str), top["resnum"].astype(int)))
+        frozen = _hbond_frozen_mask(meGO_LJ, prior, sb_resnum, min_sep)
+        _term.note(f"--hbond: {int(frozen.sum())} non-local backbone H-O / N-O contacts not learned")
+        meGO_LJ = meGO_LJ.loc[~frozen]
 
     needed_fields = [
         "molecule_name_ai",
@@ -723,6 +812,8 @@ def generate_LJ(meGO_ensemble, train_dataset, parameters, prior):
             meGO_LJ_sym = apply_symmetries(meGO_ensemble, meGO_LJ, parameters.symmetry)
         meGO_LJ = pd.concat([meGO_LJ, meGO_LJ_sym])
         meGO_LJ.reset_index(inplace=True)
+        if hbond_freeze:
+            meGO_LJ = meGO_LJ.loc[~_hbond_frozen_mask(meGO_LJ, prior, sb_resnum, min_sep)]
         et = time.time()
         _term.timing(et - st)
         st = et
@@ -765,6 +856,9 @@ def generate_LJ(meGO_ensemble, train_dataset, parameters, prior):
         meGO_LJ = meGO_LJ[needed_fields]
 
         stat_str = fileio.print_stats(meGO_LJ)
+
+        if hbond_freeze:
+            meGO_LJ = pd.concat([meGO_LJ, _hbond_prior_companions(meGO_LJ, prior)[needed_fields]])
 
         # --- identify duplicates ON ORIGINAL DATA ---
         dup_mask = meGO_LJ.duplicated(subset=["ai", "aj"], keep=False)

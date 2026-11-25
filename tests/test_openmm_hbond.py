@@ -267,3 +267,62 @@ def test_learned_pairs(models):
     total_plain = e_plain["LJ (SR)"] + e_plain["LJ-14"]
     total_zero = e_zero["LJ (SR)"] + e_zero["LJ-14"] + e_zero["H-bond"]
     assert total_zero - total_plain == pytest.approx(handed_over, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Production: H-O and N-O are not learned beyond the local range (option b)
+# ---------------------------------------------------------------------------
+def _toy_prior():
+    from multiego.nonbonded import TypePrior
+
+    names = ["H", "O"]
+    z = np.zeros((2, 2))
+    prior = TypePrior(names, np.zeros((2, 2), bool), z, z, z, z)
+    table = np.full((5, 5), np.nan)
+    for a, b in hb.REPULSIVE_BACKBONE_PAIRS:
+        ia, ib = hb.ROLE_INDEX[a], hb.ROLE_INDEX[b]
+        table[ia, ib] = table[ib, ia] = 1e-7 * (ia + ib)
+    prior.backbone_c12 = table
+    # residue r: N_r, H_r, C_r, O_r, CA_r (CA has no role); N_1 is a charged terminus (role 0)
+    prior.sb_role = {}
+    for r in range(1, 11):
+        for name in ("N", "H", "C", "O"):
+            prior.sb_role[f"{name}_X_{r}"] = hb.ROLE_INDEX[name]
+        prior.sb_role[f"CA_X_{r}"] = 0
+    prior.sb_role["N_X_1"] = 0
+    return prior
+
+
+def test_frozen_mask_and_companions():
+    import pandas as pd
+
+    from multiego import lj
+
+    prior = _toy_prior()
+    resnum = {k: int(k.split("_")[-1]) for k in prior.sb_role}
+    rows = [
+        ("H_X_2", "O_X_6", True),  # H-O, 4 apart: frozen
+        ("H_X_2", "O_X_3", True),  # H-O, local: learned
+        ("N_X_5", "O_X_2", True),  # N-O, 3 apart: frozen
+        ("N_X_5", "O_X_4", True),  # N-O, local: learned
+        ("H_X_2", "O_X_3", False),  # H-O, other chain: frozen
+        ("N_X_1", "O_X_9", True),  # charged N-terminus: not a backbone role, learned
+        ("C_X_2", "O_X_7", True),  # C-O: learned
+        ("C_X_2", "N_X_8", True),  # C-N: learned
+        ("CA_X_2", "O_X_9", False),  # not polar backbone: learned
+    ]
+    df = pd.DataFrame(rows, columns=["ai", "aj", "same_chain"])
+    mask = lj._hbond_frozen_mask(df, prior, resnum, 3)
+    assert mask.tolist() == [True, False, True, False, True, False, False, False, False]
+
+    kept = df.loc[~mask].assign(
+        learned=1, source="intramat", probability=0.5, rc_probability=0.1, epsilon=0.3, sigma=0.3
+    )
+    comp = lj._hbond_prior_companions(kept, prior)
+    # one intermolecular prior row per learned local H-O / N-O contact
+    assert sorted(zip(comp["ai"], comp["aj"])) == [("H_X_2", "O_X_3"), ("N_X_5", "O_X_4")]
+    assert not comp["same_chain"].any() and (comp["learned"] == 0).all()
+    ho = comp.set_index("ai").loc["H_X_2"]
+    c12 = prior.backbone_c12[hb.ROLE_INDEX["H"], hb.ROLE_INDEX["O"]]
+    assert ho["epsilon"] == pytest.approx(-c12)
+    assert ho["sigma"] == pytest.approx(c12 ** (1 / 12) / 2 ** (1 / 6))

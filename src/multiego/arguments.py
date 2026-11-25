@@ -72,12 +72,23 @@ _args_dict_shared = {
         "receives a CMAP (all but the chain termini, which keep their GROMOS torsion); the phi/psi "
         "potential is then provided by the CMAPs (OpenMM output), or absent in GROMACS.",
     },
+    "--reweighting": {
+        "default": "interpolate",
+        "choices": ["interpolate", "additive"],
+        "help": "Rule for the energy of learned attractive contacts. 'interpolate' (current rule): "
+        "eps = eps_prior + (eps_0 - eps_prior) * x, i.e. between the prior and eps_0. "
+        "'additive': eps = eps_prior + eps_0 * x, i.e. eps_0 is the largest energy added to the prior. "
+        "x = ln(p_MD / max(p_RC, p_RC^th)) / ln(1 / p_RC^th); eps_prior is 0 for repulsive priors. "
+        "The thresholds follow the rule (a contact at the MD threshold against an RC at its threshold gets "
+        "epsilon_min); the repulsive rule is the same for both.",
+    },
     "--hbond": {
         "default": False,
         "action": "store_true",
         "help": "Geometric backbone hydrogen bond (OpenMM output only). The backbone H-O, N-O, C-N, N-N and O-O "
         "prior becomes purely repulsive (c6 = 0) in every output, the GROMACS files included; mego_params.h5 "
         "gets an orientation-dependent N-H...O=C term in place of the H-O Lennard-Jones attraction. "
+        "In production, backbone H-O and N-O contacts 3 or more residues apart or between chains are not learned. "
         "Requires --hbond_epsilon_local.",
     },
     "--hbond_epsilon_local": {
