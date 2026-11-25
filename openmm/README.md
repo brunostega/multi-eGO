@@ -55,7 +55,12 @@ With `--hbond` the prior of the backbone H-O, N-O, C-N, N-N and O-O pairs
 becomes purely repulsive (c6 = 0, the default repulsive c12 of the pair) in
 every output, `ffnonbonded.itp` included, since the GROMACS files of the
 reference model define the prior of the next production step. C-O keeps its
-prior; learned contacts are generated as usual. The GROMACS files have no
+prior. Learned contacts are generated as usual, except backbone H-O and N-O
+between atoms 3 or more residues apart or on different chains: these describe
+the hydrogen bond itself and keep the repulsive prior (they are not learned,
+so the hydrogen bond is not put back into the isotropic matrix). Learned local
+H-O / N-O contacts are written in `[ pairs ]`, so that the matrix entry, which
+also applies between chains, keeps the prior. The GROMACS files have no
 hydrogen-bond term. The energy appears as `H-bond` in `<output>_energy.csv`.
 
 The term is an OpenMM `CustomHbondForce`. On GPU its cost is about linear in

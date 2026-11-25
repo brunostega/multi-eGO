@@ -78,6 +78,7 @@ _args_dict_shared = {
         "help": "Geometric backbone hydrogen bond (OpenMM output only). The backbone H-O, N-O, C-N, N-N and O-O "
         "prior becomes purely repulsive (c6 = 0) in every output, the GROMACS files included; mego_params.h5 "
         "gets an orientation-dependent N-H...O=C term in place of the H-O Lennard-Jones attraction. "
+        "In production, backbone H-O and N-O contacts 3 or more residues apart or between chains are not learned. "
         "Requires --hbond_epsilon_local.",
     },
     "--hbond_epsilon_local": {

@@ -11,10 +11,13 @@ attraction.  At generation two things change:
    3.9 A, N-N at 4.5 A, O-O): a mean-field stand-in for the hydrogen bond.
    With an explicit term these attractions would count it twice, so for the
    *backbone* atoms of these pairs the prior becomes purely repulsive (c6 = 0).
+   In production, backbone H-O and N-O contacts between atoms at least 3
+   residues apart or on different chains are not learned (they describe the
+   hydrogen bond itself; ``lj.HBOND_FROZEN_PAIRS``).
    The c12 is the default repulsive c12 of the pair of chemical types used
    everywhere else in multi-eGO (``type_definitions._c12_df``, the ``rep`` of
-   a contact).  C-O keeps its prior.  Learned contacts are not touched: they
-   are reweighted from this prior with the usual rules.  The change is in
+   a contact).  C-O keeps its prior.  The other learned contacts (C-N, N-N,
+   O-O included) are reweighted from this prior with the usual rules.  The change is in
    every output (``ffnonbonded.itp``, ``topol_mego.top`` and
    ``mego_params.h5``), because the GROMACS files of the reference model
    define the prior of the next production step.
