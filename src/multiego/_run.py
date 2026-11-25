@@ -133,7 +133,7 @@ def _main(root_dir, bt):
         st = et
 
         _term.header("Generating LJ dataset")
-        prior = mg.generate_MG_prior(meGO_ensembles)
+        prior = mg.generate_MG_prior(meGO_ensembles, hbond=getattr(args, "hbond", False))
         meGO_LJ, meGO_LJ_14, stat_str = lj.generate_LJ(meGO_ensembles, train_dataset, args, prior)
         del train_dataset
         gc.collect()
@@ -146,7 +146,7 @@ def _main(root_dir, bt):
         with _term.spinner("building MG LJ"):
             # The prior is kept as a matrix over chemical types; there are no
             # learned interactions (overrides) in a molten-globule model.
-            prior = mg.generate_MG_prior(meGO_ensembles)
+            prior = mg.generate_MG_prior(meGO_ensembles, hbond=getattr(args, "hbond", False))
             meGO_LJ = None
         stat_str = io.print_stats(mg.prior_stats_frame(meGO_ensembles, prior))
         et = time.time()

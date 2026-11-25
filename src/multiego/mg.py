@@ -109,7 +109,7 @@ def _per_type_values(meGO_ensemble, sbtype_dict, label):
     return values
 
 
-def generate_MG_prior(meGO_ensemble):
+def generate_MG_prior(meGO_ensemble, hbond=False):
     """
     Generates the molten-globule prior as a matrix over chemical atom types.
 
@@ -128,6 +128,10 @@ def generate_MG_prior(meGO_ensemble):
     ----------
     meGO_ensemble : MeGOEnsemble
         The initialized meGO ensemble.
+    hbond : bool
+        ``--hbond``: add the repulsive polar-backbone rule (see
+        ``multiego.hbond``), which takes precedence over the type rules for
+        the backbone atoms it covers.
 
     Returns
     -------
@@ -184,6 +188,11 @@ def generate_MG_prior(meGO_ensemble):
 
     # sb_type -> chemical type, used to look up the prior of an atom pair.
     prior.sb_chem = dict(meGO_ensemble.sbtype_type_dict)
+    if hbond:
+        from . import hbond as _hbond
+
+        prior.backbone_c12 = _hbond.backbone_repulsive_c12(meGO_ensemble)
+        prior.sb_role = _hbond.sbtype_roles(meGO_ensemble)
     return prior
 
 

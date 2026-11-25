@@ -55,7 +55,7 @@ jobs:
       - name: Run OpenMM backend tests
         # GROMACS references are stored in tests/openmm_reference; GROMACS is not needed here
         run: |
-          pytest tests/test_openmm_backend.py tests/test_openmm_cmap.py tests/test_cmap_builder.py tests/test_openmm_paramfile.py
+          pytest tests/test_openmm_backend.py tests/test_openmm_cmap.py tests/test_cmap_builder.py tests/test_openmm_paramfile.py tests/test_openmm_hbond.py
 
   lint:
     runs-on: ubuntu-latest

@@ -51,9 +51,10 @@ def _key(df):
     return sorted(map(tuple, df[["ai", "aj", "ak", "al", "phase", "phi_k", "per"]].astype(float).values.tolist()))
 
 
-# GB1 has 56 residues: phi on residues 2-56, psi on residues 1-55; the termini lose theirs too.
-@pytest.mark.parametrize("system, n_phi, n_psi", [("aladip", 1, 1), ("gpref", 55, 55)])
-def test_backbone_cmap_removes_only_phi_psi(system, n_phi, n_psi):
+# GB1 has 56 residues: phi on residues 2-56, psi on residues 1-55. Residues 2-55 get a CMAP and lose
+# both; the termini keep theirs (psi of residue 1, phi of residue 56). The capped dipeptide loses both.
+@pytest.mark.parametrize("system, n_phi, n_psi, kept_termini", [("aladip", 1, 1, 0), ("gpref", 54, 54, 2)])
+def test_backbone_cmap_removes_only_phi_psi(system, n_phi, n_psi, kept_termini):
     from multiego.ensemble_data import _build_bonded_interactions
 
     top = _load(system)
@@ -74,12 +75,15 @@ def test_backbone_cmap_removes_only_phi_psi(system, n_phi, n_psi):
             return tuple(atoms[int(i) - 1].name for i in row[:4])
 
         assert all(names(r) in (_topology.PHI_NAMES, _topology.PSI_NAMES) for r in removed)
-        assert not any(
-            names(r) in (_topology.PHI_NAMES, _topology.PSI_NAMES)
-            and len({atoms[int(i) - 1].residue.idx for i in r[:4]}) == 2
+        kept_phi_psi = {
+            (names(r), atoms[int(r[2]) - 1].residue.idx)
             for r in kept
-        )
-        # every phi and every psi is gone, termini included
+            if names(r) in (_topology.PHI_NAMES, _topology.PSI_NAMES)
+            and len({atoms[int(i) - 1].residue.idx for i in r[:4]}) == 2
+        }
+        assert len(kept_phi_psi) == kept_termini  # only the termini keep a phi or psi
+        with_cmap = _topology.cmap_residues(mol)
+        assert all(res not in with_cmap for _, res in kept_phi_psi)
         phi_res = {atoms[int(r[2]) - 1].residue.idx for r in removed if names(r) == _topology.PHI_NAMES}
         psi_res = {atoms[int(r[1]) - 1].residue.idx for r in removed if names(r) == _topology.PSI_NAMES}
         assert (len(phi_res), len(psi_res)) == (n_phi, n_psi)
@@ -101,3 +105,15 @@ def test_backbone_unknown_value():
 
     with pytest.raises(ValueError, match="backbone"):
         _build_bonded_interactions(_load("aladip"), backbone="charmm")
+
+
+def test_cmap_residues_rule():
+    """Residues with a bonded neighbour on both sides get a CMAP; termini and caps do not."""
+    top = _load("gpref")
+    mol = list(top.molecules.values())[0][0]
+    idx = _topology.cmap_residues(mol)
+    assert len(idx) == len(mol.residues) - 2
+    assert mol.residues[0].idx not in idx and mol.residues[-1].idx not in idx
+    top = _load("aladip")
+    mol = list(top.molecules.values())[0][0]
+    assert [mol.residues[i].name for i in sorted(_topology.cmap_residues(mol))] == ["ALA"]
