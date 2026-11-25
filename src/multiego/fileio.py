@@ -402,6 +402,11 @@ def write_model(meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, stat_str
                 "--backbone cmap: the GROMACS files have no backbone phi/psi potential (the CMAPs are only in "
                 "the OpenMM parameter file)."
             )
+        if getattr(parameters, "hbond", False):
+            _term.warn(
+                "--hbond: the GROMACS files have the repulsive polar backbone prior but no hydrogen-bond term "
+                "(the term is only in the OpenMM parameter file)."
+            )
         write_topology(
             meGO_ensemble.topology_dataframe,
             meGO_ensemble.molecule_type_dict,

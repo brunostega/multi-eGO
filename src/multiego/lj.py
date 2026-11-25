@@ -279,6 +279,11 @@ def init_LJ_datasets(meGO_ensemble, matrices, args):
     all_bd = bonded.generate_bond_distance_data(meGO_ensemble)
     rule_tables = _special_rule_tables(meGO_ensemble)
     c12_table = _nthbond_c12_table(meGO_ensemble)
+    backbone_rule = None
+    if getattr(args, "hbond", False):
+        from . import hbond
+
+        backbone_rule = (hbond.sbtype_roles(meGO_ensemble), hbond.backbone_repulsive_c12(meGO_ensemble))
 
     # A reference matrix can serve several training matrices: count its uses
     # so that it is freed after the last one.
@@ -338,7 +343,7 @@ def init_LJ_datasets(meGO_ensemble, matrices, args):
         for start in range(0, len(temp_merged), ANNOTATION_ROWS):
             stop = start + ANNOTATION_ROWS
             piece = temp_merged.iloc[start:stop][td_fields]
-            piece = _annotate_training_chunk(meGO_ensemble, piece, all_bd, rule_tables, c12_table)
+            piece = _annotate_training_chunk(meGO_ensemble, piece, all_bd, rule_tables, c12_table, backbone_rule)
             chunks.append(piece.loc[piece["learned"] == 1])
         del temp_merged
 
@@ -444,11 +449,15 @@ def _nthbond_c12_table(meGO_ensemble):
     return {"type_to_code": type_to_code, "c12": table}
 
 
-def _annotate_training_chunk(meGO_ensemble, train_dataset, all_bd, rule_tables, c12_table):
+def _annotate_training_chunk(meGO_ensemble, train_dataset, all_bd, rule_tables, c12_table, backbone_rule=None):
     """
     Row-wise annotation of one merged training/reference contact matrix:
     bond distances, default repulsion, mg sigma/epsilon and the special
     non-local rules, followed by the consistency check of the input cutoffs.
+
+    ``backbone_rule`` (``--hbond``): (sb_type -> backbone role, 5 x 5 c12
+    table) of the repulsive polar-backbone prior (``multiego.hbond``); it
+    takes precedence over the special rules for the pairs it covers.
 
     Every operation is row-wise, so annotating each matrix separately gives
     the same rows as annotating their concatenation.
@@ -545,6 +554,16 @@ def _annotate_training_chunk(meGO_ensemble, train_dataset, all_bd, rule_tables, 
     mg_epsilon = np.where(is_att & ~np.isnan(row_epsilon), row_epsilon, mg_epsilon)
     mg_sigma = np.where(is_att & ~np.isnan(row_sigma), row_sigma, mg_sigma)
 
+    # --hbond: repulsive polar-backbone prior
+    if backbone_rule is not None:
+        roles, bb_table = backbone_rule
+        role_i = train_dataset["ai"].astype(str).map(roles).fillna(0).to_numpy(dtype=np.intp)
+        role_j = train_dataset["aj"].astype(str).map(roles).fillna(0).to_numpy(dtype=np.intp)
+        bb_c12 = bb_table[role_i, role_j]
+        is_bb = ~np.isnan(bb_c12)
+        mg_epsilon = np.where(is_bb, -bb_c12, mg_epsilon)
+        mg_sigma = np.where(is_bb, bb_c12 ** (1 / 12) / 2 ** (1 / 6), mg_sigma)
+
     train_dataset["rep"] = rep
     train_dataset["mg_epsilon"] = mg_epsilon
     train_dataset["mg_sigma"] = mg_sigma
@@ -623,11 +642,17 @@ def resolve_overrides(meGO_LJ, prior):
     if (meGO_LJ["learned"] == 0).any():
         a = prior.index(meGO_LJ["ai"].map(prior.sb_chem))
         b = prior.index(meGO_LJ["aj"].map(prior.sb_chem))
-        prior_wins = (
-            (meGO_LJ["learned"].to_numpy() == 0)
-            & prior.has_rule[a, b]
-            & (prior.sigma[a, b] < meGO_LJ["sigma"].to_numpy())
-        )
+        has_rule = prior.has_rule[a, b]
+        prior_sigma = prior.sigma[a, b]
+        if prior.backbone_c12 is not None:
+            # --hbond: the repulsive polar-backbone rule replaces the type rule
+            role_i = meGO_LJ["ai"].map(prior.sb_role).fillna(0).to_numpy(dtype=np.intp)
+            role_j = meGO_LJ["aj"].map(prior.sb_role).fillna(0).to_numpy(dtype=np.intp)
+            bb_c12 = prior.backbone_c12[role_i, role_j]
+            is_bb = ~np.isnan(bb_c12)
+            has_rule = has_rule | is_bb
+            prior_sigma = np.where(is_bb, np.nan_to_num(bb_c12) ** (1 / 12) / 2 ** (1 / 6), prior_sigma)
+        prior_wins = (meGO_LJ["learned"].to_numpy() == 0) & has_rule & (prior_sigma < meGO_LJ["sigma"].to_numpy())
         meGO_LJ = meGO_LJ.loc[~prior_wins]
     return meGO_LJ.reset_index(drop=True)
 

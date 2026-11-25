@@ -22,6 +22,8 @@ nrexcl + [ exclusions ]            exclusions on the CustomNonbondedForce
 comm every 20 steps                CMMotionRemover(20)
 backbone CMAP (optional)           CMAPTorsionForce on (C-1, N, CA, C, N+1), maps
                                    from ``cmap_dir`` (see ``cmap.py``)
+(none: models built with --hbond)  CustomHbondForce, geometric backbone hydrogen
+                                   bond (parameter file only, see ``hbond.py``)
 =================================  ==============================================
 
 Each term has its own force group (see ``FORCE_GROUPS``), so energies can be
@@ -43,6 +45,7 @@ import openmm
 from openmm import app, unit
 
 from . import cmap as _cmap
+from . import hbond as _hbond
 from .gromacs_reader import GromacsTopology, read_topology
 
 # Force group of each term. Names match the GROMACS energy terms.
@@ -54,6 +57,7 @@ FORCE_GROUPS = {
     "LJ-14": 4,
     "LJ (SR)": 5,
     "CMAP": 6,
+    "H-bond": 7,
 }
 
 DEFAULT_CUTOFF = 2.5  # nm, rvdw in mdps/ff_aa.mdp
@@ -154,12 +158,15 @@ def lj_tables(top: GromacsTopology):
 #       bonds [(i, j, r0, k)], angles [(i, j, k, theta0_rad, k)],
 #       propers [(i, j, k, l, n, phase_rad, k)], impropers [(i, j, k, l, xi0_rad, k)],
 #       pairs [(i, j, c6, c12)], exclusions set of (i, j) (complete),
-#       cmap [(map_key, (c0, n, ca, c, n1))]
+#       cmap [(map_key, (c0, n, ca, c, n1))],
+#       hbond (only with a hydrogen-bond term): dict with donors [(h, n, res)],
+#           acceptors [(o, c, res)], exclusions [(h, o)], res_min, res_span
 #   composition : [(name, copies)]
 #   c6, c12 : (T, T) tables;  cmap_maps : map_key -> (S, S) grid (file layout)
+#   hbond : None or (HBondSettings, c6 prior table, c12 prior table)
 
 
-def _assemble(molecules, composition, c6, c12, box_vectors, cutoff, com_interval, cmap_maps):
+def _assemble(molecules, composition, c6, c12, box_vectors, cutoff, com_interval, cmap_maps, hbond=None):
     system = openmm.System()
     box = [openmm.Vec3(*[float(x) for x in _strip(v)]) for v in box_vectors]
     system.setDefaultPeriodicBoxVectors(*box)
@@ -178,6 +185,24 @@ def _assemble(molecules, composition, c6, c12, box_vectors, cutoff, com_interval
     pair_f = openmm.CustomBondForce("c12/r^12 - c6/r^6")
     pair_f.addPerBondParameter("c6")
     pair_f.addPerBondParameter("c12")
+
+    hb_f, hb_types = None, None
+    if hbond is not None:
+        settings, c6p, c12p = hbond
+        used = [n for n, c in composition if c]
+        d_types = sorted({molecules[n]["type"][h] for n in used for h, _, _ in molecules[n]["hbond"]["donors"]})
+        a_types = sorted({molecules[n]["type"][o] for n in used for o, _, _ in molecules[n]["hbond"]["acceptors"]})
+        if d_types and a_types:
+            hb_f, d_index, a_index = _hbond.make_force(settings, c6, c12, c6p, c12p, d_types, a_types)
+            hb_types = (d_index, a_index)
+            hb_gap = max(settings.min_residue_separation, settings.nonlocal_separation)
+            # the hydrogen-bond force now describes every donor-acceptor pair
+            c6, c12 = c6.copy(), c12.copy()
+            for table in (c6, c12):
+                table[np.ix_(d_types, a_types)] = 0.0
+                table[np.ix_(a_types, d_types)] = 0.0
+    hb_res_offset = 0
+    hb_excl_per_donor = {}
 
     n_types = c6.shape[0]
     rc6 = cutoff**-6
@@ -225,6 +250,22 @@ def _assemble(molecules, composition, c6, c12, box_vectors, cutoff, com_interval
                     map_index[key] = cmap_f.addMap(grid.shape[0], _cmap.to_openmm_map(grid))
                 c0, n, ca, c, n1 = (o + a for a in atoms)
                 cmap_f.addTorsion(map_index[key], c0, n, ca, c, n, ca, c, n1)
+            if hb_f is not None:
+                hb = m["hbond"]
+                d_index, a_index = hb_types
+                res0 = hb_res_offset - hb["res_min"]
+                donor_of, acceptor_of = {}, {}
+                for h, n, res in hb["donors"]:
+                    donor_of[h] = hb_f.addDonor(o + h, o + n, -1, [float(d_index[m["type"][h]]), float(res + res0)])
+                for oo, c, res in hb["acceptors"]:
+                    acceptor_of[oo] = hb_f.addAcceptor(
+                        o + oo, o + c, -1, [float(a_index[m["type"][oo]]), float(res + res0)]
+                    )
+                for h, oo in hb["exclusions"]:
+                    d = donor_of[h]
+                    hb_f.addExclusion(d, acceptor_of[oo])
+                    hb_excl_per_donor[d] = hb_excl_per_donor.get(d, 0) + 1
+                hb_res_offset += hb["res_span"] + hb_gap
             offset += len(m["mass"])
 
     for label, force in (
@@ -246,6 +287,15 @@ def _assemble(molecules, composition, c6, c12, box_vectors, cutoff, com_interval
         cmap_f.setForceGroup(FORCE_GROUPS["CMAP"])
         cmap_f.setName("CMAP")
         system.addForce(cmap_f)
+    if hb_f is not None:
+        if hb_excl_per_donor and max(hb_excl_per_donor.values()) > 4:
+            raise ValueError(
+                f"a hydrogen-bond donor has {max(hb_excl_per_donor.values())} exclusions; "
+                "GPU platforms of OpenMM accept at most 4"
+            )
+        hb_f.setForceGroup(FORCE_GROUPS["H-bond"])
+        hb_f.setName("H-bond")
+        system.addForce(hb_f)
     if com_interval:
         system.addForce(openmm.CMMotionRemover(int(com_interval)))
     return system
@@ -398,6 +448,11 @@ def _spec_from_params(params, molecules):
     c6_full, c12_full = params.nonbonded.dense_tables()
     idx = np.array(all_types, dtype=int)
     c6, c12 = c6_full[np.ix_(idx, idx)], c12_full[np.ix_(idx, idx)]
+    settings = params.hbond
+    hbond = None
+    if settings is not None:
+        p6_full, p12_full = params.nonbonded.prior_tables()
+        hbond = (settings, p6_full[np.ix_(idx, idx)], p12_full[np.ix_(idx, idx)])
     cmap_maps, cmap_res = {}, {}
     if params.cmap is not None:
         order = params.cmap.map_order()
@@ -416,20 +471,49 @@ def _spec_from_params(params, molecules):
             t = b[term]
             return list(zip(*[np.asarray(t[c]).tolist() for c in cols])) if len(t[cols[0]]) else []
 
+        n_atoms = len(mol.atoms["mass"])
         explicit = {(min(i, j), max(i, j)) for i, j in rows("exclusions", ["ai", "aj"])}
-        excl = bonded_exclusions(len(mol.atoms["mass"]), rows("bonds", ["ai", "aj"]), params.nrexcl) | explicit
+        excl = bonded_exclusions(n_atoms, rows("bonds", ["ai", "aj"]), params.nrexcl) | explicit
+        types = [remap.get(int(t), 0) for t in mol.atoms["nb_type"]]
+        pairs = rows("pairs", ["ai", "aj", "c6", "c12"])
+        hb = None
+        if settings is not None:
+            resnums = np.asarray(mol.atoms["resnum"], int)
+            donors, acceptors = _hbond.find_donors_acceptors(mol.atoms["name"], resnums)
+            within5 = bonded_exclusions(n_atoms, rows("bonds", ["ai", "aj"]), _hbond.TOPOLOGICAL_BONDS)
+            kept, local_learned, _ = _hbond.classify_pairs(pairs, donors, acceptors, resnums, within5, settings)
+            # the hydrogen-bond force adds the table LJ of local pairs: correct the pair by it
+            pairs = kept + [
+                (i, j, p6 - c6[types[i], types[j]], p12 - c12[types[i], types[j]]) for i, j, p6, p12 in local_learned
+            ]
+            h_atoms = {h for h, _, _ in donors}
+            o_atoms = {o for o, _, _ in acceptors}
+            hb_excl = []
+            for i, j in sorted(excl & within5):
+                if i in h_atoms and j in o_atoms:
+                    hb_excl.append((i, j))
+                elif j in h_atoms and i in o_atoms:
+                    hb_excl.append((j, i))
+            hb = {
+                "donors": donors,
+                "acceptors": acceptors,
+                "exclusions": hb_excl,
+                "res_min": int(resnums.min()),
+                "res_span": int(resnums.max() - resnums.min() + 1),
+            }
         spec[name] = {
             "mass": np.asarray(mol.atoms["mass"], float).tolist(),
-            "type": [remap.get(int(t), 0) for t in mol.atoms["nb_type"]],
+            "type": types,
             "bonds": rows("bonds", ["ai", "aj", "r0", "k"]),
             "angles": rows("angles", ["ai", "aj", "ak", "theta0", "k"]),
             "propers": rows("proper_dihedrals", ["ai", "aj", "ak", "al", "periodicity", "phase", "k"]),
             "impropers": rows("improper_dihedrals", ["ai", "aj", "ak", "al", "theta0", "k"]),
-            "pairs": rows("pairs", ["ai", "aj", "c6", "c12"]),
+            "pairs": pairs,
             "exclusions": excl,
             "cmap": cmap_res.get(name, []),
+            "hbond": hb,
         }
-    return spec, composition, c6, c12, cmap_maps
+    return spec, composition, c6, c12, cmap_maps, hbond
 
 
 def bonded_exclusions(n_atoms, bonds, nrexcl):
@@ -462,7 +546,8 @@ def create_system_from_params(
 
     Exclusions follow GROMACS: atoms within ``nrexcl`` bonds plus the explicit
     exclusions of each molecule. The backbone CMAPs stored in the file (models
-    built with ``--backbone cmap``) are applied.
+    built with ``--backbone cmap``) and the geometric hydrogen bond (models
+    built with ``--hbond``, see ``hbond.py``) are applied.
 
     Parameters
     ----------
@@ -472,8 +557,8 @@ def create_system_from_params(
         Composition in the order of the coordinates, the equivalent of the
         GROMACS ``[ molecules ]``. Default: one copy of each molecule type.
     """
-    spec, composition, c6, c12, cmap_maps = _spec_from_params(params, molecules)
-    return _assemble(spec, composition, c6, c12, box_vectors, cutoff, com_interval, cmap_maps)
+    spec, composition, c6, c12, cmap_maps, hbond = _spec_from_params(params, molecules)
+    return _assemble(spec, composition, c6, c12, box_vectors, cutoff, com_interval, cmap_maps, hbond)
 
 
 def create_topology_from_params(params, molecules=None, box_vectors=None):

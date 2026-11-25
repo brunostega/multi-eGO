@@ -32,8 +32,11 @@ Precedence (which parameters a pair of atoms gets)
 --------------------------------------------------
 1. an override, if the pair has one (overrides are resolved by the
    generation step, see ``lj.resolve_overrides``);
-2. otherwise the mg prior of the two chemical types, if a prior rule exists;
-3. otherwise the combination rule (the pair is *not* listed explicitly).
+2. otherwise, with ``--hbond``, the repulsive polar-backbone rule, if both
+   atoms are polar backbone atoms of a listed role pair (see
+   ``multiego.hbond``; ``TypePrior.backbone_c12``);
+3. otherwise the mg prior of the two chemical types, if a prior rule exists;
+4. otherwise the combination rule (the pair is *not* listed explicitly).
 """
 
 from dataclasses import dataclass
@@ -73,6 +76,12 @@ class TypePrior:
     # sb_type -> chemical type of the system the prior was built for
     # (filled by mg.generate_MG_prior; not stored in the parameter file).
     sb_chem: dict = None
+    # --hbond: (5 x 5) c12 of the repulsive polar-backbone rule over the
+    # backbone roles of multiego.hbond (NaN: no rule); None without --hbond.
+    backbone_c12: np.ndarray = None
+    # sb_type -> backbone role (filled by mg.generate_MG_prior with --hbond;
+    # not stored in the parameter file, which stores the role per sb_type).
+    sb_role: dict = None
 
     @property
     def n_types(self):
@@ -114,6 +123,12 @@ class NonbondedModel:
         self.default_c6 = np.asarray(default_c6, dtype=float)
         self.default_c12 = np.asarray(default_c12, dtype=float)
         self.number = np.array([meGO_ensemble.sbtype_number_dict[t] for t in self.sb_type], dtype=int)
+        # Backbone role of each atom (--hbond only, see multiego.hbond).
+        self.bb_role = None
+        if prior.backbone_c12 is not None:
+            from .hbond import backbone_roles
+
+            self.bb_role = backbone_roles(top["name"], top["type"])
 
         # Output order of the explicit pairs (same as the former fileio.sort_LJ):
         # by molecule name as written in the molecule dictionary ("1_GB1", ...,
@@ -191,6 +206,11 @@ class NonbondedModel:
                     listed = prior.has_rule[ci, cj].copy()
                     c6 = prior.c6[ci, cj].copy()
                     c12 = prior.c12[ci, cj].copy()
+                    if self.bb_role is not None:
+                        bb, bb_c12 = _backbone_rule(prior, self.bb_role[i], self.bb_role[js])
+                        listed |= bb
+                        c6[bb] = 0.0
+                        c12[bb] = bb_c12[bb]
                     same_chain = np.zeros(len(js), dtype=bool)
                     source = np.full(len(js), "mg", dtype=object)
 
@@ -236,21 +256,36 @@ class NonbondedModel:
         combination rule, overwritten by the prior where a rule exists,
         overwritten by the overrides.
         """
-        return dense_tables(self.chem, self.default_c6, self.default_c12, self.prior, self.overrides)
+        return dense_tables(self.chem, self.default_c6, self.default_c12, self.prior, self.overrides, self.bb_role)
 
 
-def dense_tables(chem, default_c6, default_c12, prior, overrides):
+def _backbone_rule(prior, role_i, role_j):
+    """Mask and c12 of the repulsive polar-backbone rule (``--hbond``) for pairs of roles."""
+    c12 = np.asarray(prior.backbone_c12)[role_i, role_j]
+    return ~np.isnan(c12), c12
+
+
+def dense_tables(chem, default_c6, default_c12, prior, overrides, bb_role=None):
     """
     Build the (N x N) c6/c12 tables from the compact representation.
 
     Shared by :class:`NonbondedModel` and the OpenMM parameter-file reader, so
     that the two cannot disagree.  ``overrides`` needs columns i, j, c6, c12.
+    ``bb_role``: backbone role of each type, needed when the prior has a
+    polar-backbone rule (``--hbond``).
     """
     c6 = np.sqrt(np.outer(default_c6, default_c6))
     c12 = np.sqrt(np.outer(default_c12, default_c12))
     rule = prior.has_rule[np.ix_(chem, chem)]
     c6 = np.where(rule, prior.c6[np.ix_(chem, chem)], c6)
     c12 = np.where(rule, prior.c12[np.ix_(chem, chem)], c12)
+    if prior.backbone_c12 is not None:
+        if bb_role is None:
+            raise ValueError("the prior has a polar-backbone rule (--hbond) but no backbone roles were given")
+        role = np.asarray(bb_role, dtype=int)
+        bb, bb_c12 = _backbone_rule(prior, role[:, None], role[None, :])
+        c6 = np.where(bb, 0.0, c6)
+        c12 = np.where(bb, bb_c12, c12)
     i, j = np.asarray(overrides["i"], int), np.asarray(overrides["j"], int)
     c6[i, j] = c6[j, i] = overrides["c6"]
     c12[i, j] = c12[j, i] = overrides["c12"]

@@ -260,6 +260,14 @@ def describe(params, molecules):
         print(f", CMAP on {len(params.cmap.residues['index'])} residues, maps: {', '.join(params.cmap.map_order())}")
     else:
         print()
+    hb = params.hbond
+    if hb is None:
+        print("  hydrogen bond: none")
+    else:
+        print(
+            f"  hydrogen bond: epsilon local {hb.epsilon_local} / non-local {hb.epsilon_nonlocal} kJ/mol, "
+            f"r0 {hb.r0} nm, width {hb.width} nm"
+        )
 
 
 def resolve_params(path):

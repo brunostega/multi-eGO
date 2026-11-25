@@ -10,13 +10,15 @@ is therefore the same as with GROMACS.
 
 All values are stored in OpenMM units: nm, rad, kJ/mol, amu.
 
-Layout (format version 4)
+Layout (format version 5)
 -------------------------
 ::
 
     /                         attrs: format_version, mego_version, egos, system,
                                      created, arguments (JSON of the CLI args),
-                                     nrexcl, backbone ("gromos" or "cmap")
+                                     nrexcl, backbone ("gromos" or "cmap"),
+                                     hbond (JSON of multiego.hbond.HBondSettings;
+                                     only in models built with --hbond)
     /molecules/<name>/        one group per molecule type, attrs: order (int)
         atoms/                one entry per atom, in topology order
             sb_type           str    structure-based type, e.g. "CA_GB1_12"
@@ -52,6 +54,11 @@ Layout (format version 4)
         prior/types           str   chemical atom types
         prior/has_rule        bool  (T, T) whether the mg prior defines the pair
         prior/c6, prior/c12   float (T, T) mg prior parameters
+        prior/backbone_c12    float (5, 5) --hbond only: c12 of the repulsive
+                                    polar-backbone rule over the backbone roles
+                                    (NaN: no rule), see multiego.hbond
+        bb_role               int   --hbond only: backbone role of each sb_type
+                                    (0 none, 1 N, 2 H, 3 C, 4 O)
         overrides/i, j        int   (M,) atom-pair overrides (learned contacts)
         overrides/c6, c12     float (M,)
 
@@ -65,8 +72,9 @@ These follow the GROMACS ``[ defaults ]`` written by multi-eGO
 equivalent:
 
 * a pair of sb_types (i, j) takes, in order of precedence, the parameters of
-  an override, or of the mg prior of their chemical types if
-  ``prior/has_rule`` is set, or else the combination rule 1:
+  an override, or (``--hbond``) c6 = 0 and ``prior/backbone_c12`` of their
+  backbone roles if that is not NaN, or of the mg prior of their chemical
+  types if ``prior/has_rule`` is set, or else the combination rule 1:
   ``c6 = sqrt(c6_i c6_j)``, ``c12 = sqrt(c12_i c12_j)`` with the per-type
   ``default_c6/default_c12`` (the GROMACS ``[ atomtypes ]``).  The first two
   cases are the pairs listed in the GROMACS ``[ nonbond_params ]``; the
@@ -83,9 +91,10 @@ from dataclasses import dataclass, field
 import h5py
 import numpy as np
 
+from multiego.hbond import HBondSettings
 from multiego.nonbonded import TypePrior, dense_tables
 
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 DEFAULT_FILENAME = "mego_params.h5"
 
 # Columns of each bonded table: (name, dtype).  Atom indices come first.
@@ -138,6 +147,7 @@ class NonbondedParameters:
     default_c12: np.ndarray
     prior: TypePrior
     overrides: dict  # i, j, c6, c12 arrays
+    bb_role: np.ndarray = None  # backbone role per sb_type (--hbond only)
 
     @property
     def n_types(self):
@@ -151,16 +161,16 @@ class NonbondedParameters:
         the simulation engine needs.  The expansion is shared with the
         generation code (``multiego.nonbonded.dense_tables``).
         """
-        return dense_tables(self.chem_type, self.default_c6, self.default_c12, self.prior, self.overrides)
+        return dense_tables(self.chem_type, self.default_c6, self.default_c12, self.prior, self.overrides, self.bb_role)
 
     def prior_tables(self):
         """
         (n_types x n_types) c6 and c12 tables of the prior alone, without the
         learned overrides.  Used by the hydrogen-bond term, which must not
-        depend on the training data (kept for the hydrogen-bond term, handoff 4.4).
+        depend on the training data (handoff 4.4).
         """
         empty = {k: np.asarray(v)[:0] for k, v in self.overrides.items()}
-        return dense_tables(self.chem_type, self.default_c6, self.default_c12, self.prior, empty)
+        return dense_tables(self.chem_type, self.default_c6, self.default_c12, self.prior, empty, self.bb_role)
 
 
 @dataclass
@@ -190,6 +200,12 @@ class MegoParameters:
     @property
     def nrexcl(self):
         return int(self.attrs.get("nrexcl", 3))
+
+    @property
+    def hbond(self):
+        """:class:`multiego.hbond.HBondSettings`, or None for a model without --hbond."""
+        text = self.attrs.get("hbond")
+        return HBondSettings.from_json(text) if text else None
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +400,7 @@ def from_generation(meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, attr
         default_c12=nonbonded_model.default_c12,
         prior=nonbonded_model.prior,
         overrides={k: ov[k].to_numpy() for k in ("i", "j", "c6", "c12")},
+        bb_role=nonbonded_model.bb_role,
     )
 
     file_attrs = {
@@ -395,6 +412,11 @@ def from_generation(meGO_ensemble, nonbonded_model, meGO_LJ_14, parameters, attr
         "nrexcl": 3,  # same as the [ moleculetype ] written by the GROMACS backend
         "backbone": getattr(parameters, "backbone", "gromos"),
     }
+    settings = HBondSettings.from_args(parameters)
+    if settings is not None:
+        if nonbonded_model.prior.backbone_c12 is None:
+            raise ValueError("--hbond: the prior has no polar-backbone rule (generate_MG_prior(..., hbond=True))")
+        file_attrs["hbond"] = settings.to_json()
     file_attrs.update(attrs or {})
     cmap = None
     if file_attrs["backbone"] == "cmap":
@@ -454,6 +476,9 @@ def write(path, params):
         _write_table(f["nonbonded"], "prior", {"types": p.types})
         for name in ("has_rule", "c6", "c12", "epsilon", "sigma"):
             f["nonbonded/prior"].create_dataset(name, data=getattr(p, name))
+        if p.backbone_c12 is not None:
+            f["nonbonded/prior"].create_dataset("backbone_c12", data=p.backbone_c12)
+            f["nonbonded"].create_dataset("bb_role", data=np.asarray(nb.bb_role, dtype=int))
         _write_table(f["nonbonded"], "overrides", nb.overrides)
         if params.cmap is not None:
             g = f.create_group("cmap")
@@ -481,6 +506,7 @@ def read(path):
         prior = TypePrior(
             types=prior_group["types"].asstr()[()],
             **{name: prior_group[name][()] for name in ("has_rule", "c6", "c12", "epsilon", "sigma")},
+            backbone_c12=prior_group["backbone_c12"][()] if "backbone_c12" in prior_group else None,
         )
         nonbonded = NonbondedParameters(
             sb_types=g["sb_types"].asstr()[()],
@@ -489,6 +515,7 @@ def read(path):
             default_c12=g["default_c12"][()],
             prior=prior,
             overrides=_read_table(g["overrides"]),
+            bb_role=g["bb_role"][()] if "bb_role" in g else None,
         )
         cmap = None
         if "cmap" in f:

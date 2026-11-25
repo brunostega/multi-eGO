@@ -72,6 +72,36 @@ _args_dict_shared = {
         "receives a CMAP (all but the chain termini, which keep their GROMOS torsion); the phi/psi "
         "potential is then provided by the CMAPs (OpenMM output), or absent in GROMACS.",
     },
+    "--hbond": {
+        "default": False,
+        "action": "store_true",
+        "help": "Geometric backbone hydrogen bond (OpenMM output only). The backbone H-O, N-O, C-N, N-N and O-O "
+        "prior becomes purely repulsive (c6 = 0) in every output, the GROMACS files included; mego_params.h5 "
+        "gets an orientation-dependent N-H...O=C term in place of the H-O Lennard-Jones attraction. "
+        "Requires --hbond_epsilon_local.",
+    },
+    "--hbond_epsilon_local": {
+        "default": None,
+        "type": float,
+        "help": "Depth (kJ/mol) of the hydrogen bond between donor and acceptor 3-4 residues apart "
+        "(helices, turns).",
+    },
+    "--hbond_epsilon_nonlocal": {
+        "default": None,
+        "type": float,
+        "help": "Depth (kJ/mol) of the hydrogen bond between donor and acceptor 5 or more residues apart, or on "
+        "different chains (sheets, tertiary and intermolecular contacts). Default: --hbond_epsilon_local.",
+    },
+    "--hbond_r0": {
+        "default": 0.20,
+        "type": float,
+        "help": "H...O distance (nm) up to which the hydrogen bond has its full depth.",
+    },
+    "--hbond_width": {
+        "default": 0.035,
+        "type": float,
+        "help": "Width (nm) of the Gaussian decay of the hydrogen bond beyond --hbond_r0.",
+    },
     "--cmap_dir": {
         "default": None,
         "type": str,
@@ -287,6 +317,16 @@ def validate_args(args):
         raise ValueError(f"--backend must be 'openmm', 'gromacs' or 'both', got {args.backend!r}")
     if getattr(args, "backbone", "gromos") not in ("gromos", "cmap"):
         raise ValueError(f"--backbone must be 'gromos' or 'cmap', got {args.backbone!r}")
+
+    if getattr(args, "hbond", False):
+        if args.hbond_epsilon_local is None:
+            raise ValueError("--hbond requires --hbond_epsilon_local")
+        for name in ("hbond_epsilon_local", "hbond_epsilon_nonlocal"):
+            value = getattr(args, name)
+            if value is not None and value < 0:
+                raise ValueError(f"--{name} must be >= 0, got {value}")
+        if args.hbond_r0 <= 0 or args.hbond_width <= 0:
+            raise ValueError("--hbond_r0 and --hbond_width must be > 0")
 
     if args.symmetry_file and args.symmetry:
         raise ValueError("Both symmetry file and symmetry list provided. Please provide only one.")
