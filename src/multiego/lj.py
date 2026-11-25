@@ -70,6 +70,15 @@ def set_sig_epsilon(meGO_LJ, parameters):
     assigned when training probability is above MD threshold but below the attractive
     threshold. 1-4 interactions are always kept repulsive.
 
+    With x = ln(p_MD / max(p_RC, p_RC^th)) / ln(1 / p_RC^th) and eps_p the
+    prior energy (0 for repulsive priors), the attractive epsilon is
+    eps_p + (eps_0 - eps_p) * x (``--reweighting interpolate``, between the
+    prior and eps_0) or eps_p + eps_0 * x (``--reweighting additive``, eps_0
+    is the largest energy added to the prior). It is attractive when it
+    exceeds epsilon_min; otherwise (training above its threshold, RC above the
+    MD threshold) the contact is repulsive with c12 = rep (d_MD / d_RC)^12,
+    clipped to [0.05, 2] rep, for both rules.
+
     Parameters
     ----------
     meGO_LJ : pd.DataFrame
@@ -98,10 +107,16 @@ def set_sig_epsilon(meGO_LJ, parameters):
         meGO_LJ["probability"]
         > meGO_LJ["limit_rc_att"] * np.maximum(meGO_LJ["rc_probability"], meGO_LJ["rc_threshold"])
     ) & (meGO_LJ["probability"] > meGO_LJ["md_threshold"])
+    # slope: 'interpolate' -> eps between eps_prior and eps_0; 'additive' -> eps_0 is the largest
+    # energy added to the prior (the thresholds of contacts.initialize_molecular_contacts match the rule)
+    if getattr(parameters, "reweighting", "interpolate") == "additive":
+        scale = meGO_LJ["epsilon_0"]
+    else:
+        scale = meGO_LJ["epsilon_0"] - eps_prior_pos
     with np.errstate(divide="ignore"):
-        meGO_LJ.loc[condition, "epsilon"] = eps_prior_pos - (
-            (meGO_LJ["epsilon_0"] - eps_prior_pos) / np.log(meGO_LJ["rc_threshold"])
-        ) * (np.log(meGO_LJ["probability"] / (np.maximum(meGO_LJ["rc_probability"], meGO_LJ["rc_threshold"]))))
+        meGO_LJ.loc[condition, "epsilon"] = eps_prior_pos - (scale / np.log(meGO_LJ["rc_threshold"])) * (
+            np.log(meGO_LJ["probability"] / (np.maximum(meGO_LJ["rc_probability"], meGO_LJ["rc_threshold"])))
+        )
     meGO_LJ.loc[condition, "learned"] = 1
     meGO_LJ.loc[condition, "sigma"] = meGO_LJ["distance"] / 2.0 ** (1.0 / 6.0)
 

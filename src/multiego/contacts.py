@@ -318,13 +318,16 @@ def initialize_molecular_contacts(contact_matrix, prior_matrix, args, reference)
     probabilities covers ``config.p_to_learn`` of the total mass. When no
     contacts are learned (norm = 0), the threshold defaults to 1.
 
-    Two per-contact threshold columns are added:
+    Two per-contact threshold columns are added, consistent with the
+    reweighting rule (``--reweighting``, see ``lj.set_sig_epsilon``):
 
-    - ``rc_threshold``: the RC probability equivalent to ``md_threshold``,
-      scaled by the ratio of epsilon ranges.
-    - ``limit_rc_att``: the RC probability above which the MD contact is
-      considered genuinely attractive. Values below 1 arising from negative
-      ``epsilon_prior`` are clamped to 1.
+    - ``rc_threshold``: the floor of the RC probability, defined so that a
+      contact at ``md_threshold`` against an RC at ``rc_threshold`` gets
+      exactly ``epsilon_min``. With the additive rule it is also the scale at
+      which the largest correction is exactly ``epsilon_0``.
+    - ``limit_rc_att``: the ratio p_MD / max(p_RC, rc_threshold) above which
+      the learned epsilon exceeds ``epsilon_min`` (attractive contact).
+      Values below 1 arising from negative ``epsilon_prior`` are clamped to 1.
 
     Parameters
     ----------
@@ -363,14 +366,22 @@ def initialize_molecular_contacts(contact_matrix, prior_matrix, args, reference)
 
     contact_matrix["epsilon_0"] = reference["epsilon"]
     contact_matrix["md_threshold"] = md_threshold
-    contact_matrix["rc_threshold"] = contact_matrix["md_threshold"] ** (
-        (contact_matrix["epsilon_0"] - np.maximum(0, prior_matrix["epsilon_prior"]))
-        / (contact_matrix["epsilon_0"] - config.epsilon_min)
-    )
-    contact_matrix["limit_rc_att"] = contact_matrix["rc_threshold"] ** (
-        (np.maximum(0, prior_matrix["epsilon_prior"]) - config.epsilon_min)
-        / (contact_matrix["epsilon_0"] - np.maximum(0, prior_matrix["epsilon_prior"]))
-    )
+    # Energy of the prior: c12-only (repulsive) priors count as zero.
+    eps_p = np.maximum(0, prior_matrix["epsilon_prior"])
+    eps_0 = contact_matrix["epsilon_0"]
+    # rc_threshold is defined so that a contact at the MD threshold against an RC at its
+    # threshold gets exactly epsilon_min; limit_rc_att is the probability ratio at which the
+    # learned epsilon equals epsilon_min (see lj.set_sig_epsilon).
+    if getattr(args, "reweighting", "interpolate") == "additive":
+        # eps = eps_p + eps_0 * ln(ratio) / ln(1 / rc_threshold)
+        contact_matrix["rc_threshold"] = md_threshold ** (eps_0 / (eps_0 + eps_p - config.epsilon_min))
+        contact_matrix["limit_rc_att"] = contact_matrix["rc_threshold"] ** ((eps_p - config.epsilon_min) / eps_0)
+    else:
+        # eps = eps_p + (eps_0 - eps_p) * ln(ratio) / ln(1 / rc_threshold)
+        contact_matrix["rc_threshold"] = md_threshold ** ((eps_0 - eps_p) / (eps_0 - config.epsilon_min))
+        contact_matrix["limit_rc_att"] = contact_matrix["rc_threshold"] ** (
+            (eps_p - config.epsilon_min) / (eps_0 - eps_p)
+        )
 
     # When epsilon_prior is negative the formula can produce limit_rc_att < 1,
     # which would incorrectly suppress learning. Clamp to 1 in those cases.
