@@ -134,3 +134,74 @@ def test_interpolate_unchanged():
     row, _ = learn(0.9, 0.01, eps_prior, "interpolate", md)
     expected = eps_prior - (EPS_0 - eps_prior) / np.log(rc_th) * np.log(0.9 / max(0.01, rc_th))
     assert row["epsilon"] == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("value, ok", [("additive", True), ("interpolate", True), ("addtive", False)])
+def test_reweighting_from_config_file(value, ok):
+    """The option can be given in the YAML config (values there bypass argparse's choices)."""
+    from multiego import arguments
+
+    parser = arguments.build_parser()
+    args = parser.parse_args(["--system", "gpref", "--egos", "mg"])
+    args.input_refs = []
+    args = arguments.combine_configurations([{"reweighting": value}], args, arguments.args_dict_global)
+    assert args.reweighting == value
+    if ok:
+        arguments.validate_args(args)
+    else:
+        with pytest.raises(ValueError, match="--reweighting must be"):
+            arguments.validate_args(args)
+
+
+@pytest.mark.parametrize(
+    "rule, epsilon, ok",
+    [
+        ("additive", 0.01, True),
+        ("additive", 0.0, False),
+        ("additive", -0.1, False),
+        ("interpolate", 0.07, True),
+        ("interpolate", 0.05, False),
+    ],
+)
+def test_epsilon_0_limits(rule, epsilon, ok):
+    """additive: any epsilon_0 > 0; interpolate: epsilon_0 >= epsilon_min."""
+    from multiego import arguments
+
+    args = arguments.build_parser().parse_args(["--system", "gpref", "--egos", "production", "--reweighting", rule])
+    args.input_refs = [{"matrix": "intramat_1_1", "epsilon": epsilon, "train": ["md"], "reference": "ref"}]
+    if ok:
+        arguments.validate_args(args)
+    else:
+        with pytest.raises(ValueError, match="must be greater"):
+            arguments.validate_args(args)
+
+
+def test_additive_small_epsilon_0():
+    """eps_p + eps_0 <= epsilon_min: no contact can be attractive; learned contacts become repulsive."""
+    eps_0 = 0.03
+    contact = pd.DataFrame({"probability": [1.0, 0.01], "learned": [True, True], "cutoff": [0.75, 0.75]})
+    prior = pd.DataFrame({"epsilon_prior": [0.0, 0.0], "rc_learned": [True, True]})
+    out = initialize_molecular_contacts(
+        contact, prior, argparse.Namespace(reweighting="additive"), {"reference": "r", "epsilon": eps_0}
+    )
+    assert np.isinf(out["limit_rc_att"]).all() and np.isfinite(out["rc_threshold"]).all()
+    row = pd.DataFrame(
+        [
+            {
+                "probability": 0.9,
+                "rc_probability": 0.05,
+                "md_threshold": 0.01,
+                "rc_threshold": float(out["rc_threshold"].iloc[0]),
+                "limit_rc_att": float(out["limit_rc_att"].iloc[0]),
+                "epsilon_prior": 0.0,
+                "sigma_prior": 0.35,
+                "epsilon_0": eps_0,
+                "distance": 0.40,
+                "rc_distance": 0.38,
+                "rep": 1e-6,
+                "learned": 0,
+            }
+        ]
+    )
+    res = set_sig_epsilon(row, argparse.Namespace(reweighting="additive")).iloc[0]
+    assert res["learned"] == 1 and res["epsilon"] == pytest.approx(-1e-6 * (0.40 / 0.38) ** 12)

@@ -374,8 +374,16 @@ def initialize_molecular_contacts(contact_matrix, prior_matrix, args, reference)
     # learned epsilon equals epsilon_min (see lj.set_sig_epsilon).
     if getattr(args, "reweighting", "interpolate") == "additive":
         # eps = eps_p + eps_0 * ln(ratio) / ln(1 / rc_threshold)
-        contact_matrix["rc_threshold"] = md_threshold ** (eps_0 / (eps_0 + eps_p - config.epsilon_min))
-        contact_matrix["limit_rc_att"] = contact_matrix["rc_threshold"] ** ((eps_p - config.epsilon_min) / eps_0)
+        # Where eps_p + eps_0 <= epsilon_min no contact can become attractive (the largest correction is
+        # eps_0): the floor is then the MD threshold and limit_rc_att is infinite (always repulsive/prior).
+        # (pandas arithmetic: prior_matrix is aligned on the index, as in the rest of this function)
+        reach = eps_0 + eps_p - config.epsilon_min
+        can_attract = reach > 0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            contact_matrix["rc_threshold"] = (md_threshold ** (eps_0 / reach)).where(can_attract, md_threshold)
+            contact_matrix["limit_rc_att"] = (
+                contact_matrix["rc_threshold"] ** ((eps_p - config.epsilon_min) / eps_0)
+            ).where(can_attract, np.inf)
     else:
         # eps = eps_p + (eps_0 - eps_p) * ln(ratio) / ln(1 / rc_threshold)
         contact_matrix["rc_threshold"] = md_threshold ** ((eps_0 - eps_p) / (eps_0 - config.epsilon_min))
