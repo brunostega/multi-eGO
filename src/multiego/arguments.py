@@ -74,6 +74,7 @@ _args_dict_shared = {
     },
     "--reweighting": {
         "default": "interpolate",
+        "type": str,
         "choices": ["interpolate", "additive"],
         "help": "Rule for the energy of learned attractive contacts. 'interpolate' (current rule): "
         "eps = eps_prior + (eps_0 - eps_prior) * x, i.e. between the prior and eps_0. "
@@ -305,13 +306,20 @@ def validate_args(args):
     if not args.egos:
         raise ValueError("No egos mode found! Please provide an egos mode.")
 
+    # values from the config file are not checked against "choices" by argparse
+    if getattr(args, "reweighting", "interpolate") not in ("interpolate", "additive"):
+        raise ValueError(f"--reweighting must be 'interpolate' or 'additive', got {args.reweighting!r}")
+
     for ref in args.input_refs:
         required_keys = {"matrix", "epsilon", "train", "reference"}
         missing_keys = required_keys - set(ref)
         if missing_keys:
             raise ValueError(f"Missing required keys in {ref}:\n{missing_keys}")
 
-        empty_required_keys = [key for key in required_keys if not ref[key]]
+        # epsilon = 0 is a value (rejected below with the proper message), not a missing key
+        empty_required_keys = [
+            key for key in required_keys if (ref[key] is None or ref[key] == "") or (key != "epsilon" and not ref[key])
+        ]
         if empty_required_keys:
             if "train" in empty_required_keys:
                 raise ValueError("No training simulations found! Please provide a list of training simulations.")
@@ -319,7 +327,11 @@ def validate_args(args):
                 raise ValueError("No epsilon value found! Please provide an epsilon value.")
             raise ValueError(f"Empty values for required keys in {ref}.\nMissing {empty_required_keys}")
 
-        if ref["epsilon"] < config.epsilon_min:
+        if getattr(args, "reweighting", "interpolate") == "additive":
+            # additive: epsilon_0 is the largest energy added to the prior; any positive value is meaningful
+            if not ref["epsilon"] > 0:
+                raise ValueError(f"--epsilon ({ref['epsilon']}) must be greater than 0 with --reweighting additive")
+        elif ref["epsilon"] < config.epsilon_min:
             raise ValueError(
                 f"--epsilon ({ref['epsilon']}) must be greater-equal than epsilon_min ({config.epsilon_min})"
             )
