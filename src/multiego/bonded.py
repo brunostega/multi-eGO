@@ -424,3 +424,54 @@ def generate_bond_distance_data(meGO_ensemble):
     if not chunks:
         return pd.DataFrame()
     return pd.concat(chunks, axis=0, sort=False, ignore_index=True)
+
+
+# Backbone torsion axes: phi rotates about N-CA, psi about CA-C (same residue).
+PHI_PSI_AXES = ({"N", "CA"}, {"CA", "C"})
+
+
+def phipsi_dependent_pairs(meGO_ensemble, max_distance=config.max_bond_separation):
+    """
+    Local atom pairs (4 to ``max_distance`` bonds apart) whose distance depends
+    on a backbone phi or psi torsion.
+
+    The distance between the ends of a bond path a-b-...-z depends on the
+    torsions about its interior bonds (all but the first and the last). A pair
+    is phi/psi-dependent if the interior of its shortest bond path contains an
+    N-CA (phi) or CA-C (psi) bond of one residue. Learning such pairs changes
+    the backbone Ramachandran distribution (which the CMAPs / dihedrals set).
+    Pairs whose path only crosses side-chain torsions or the planar peptide
+    bond are not included.
+
+    Returns
+    -------
+    set of (sb_type, sb_type), both orders.
+    """
+    top = meGO_ensemble.topology_dataframe
+    out = set()
+    for molecule, bond_pair in meGO_ensemble.bond_pairs.items():
+        if not bond_pair:
+            continue
+        sel = top.loc[top["molecule_name"] == molecule]
+        number = sel["number"].astype(str).to_numpy()
+        sb = dict(zip(number, sel["sb_type"].astype(str)))
+        name = dict(zip(number, sel["name"].astype(str)))
+        resnum = dict(zip(number, sel["resnum"].astype(str)))
+
+        def is_axis(u, v):
+            return resnum[u] == resnum[v] and {name[u], name[v]} in PHI_PSI_AXES
+
+        G = nx.Graph()
+        G.add_edges_from(bond_pair)
+        for src in G.nodes:
+            if src not in sb:
+                continue
+            for dst, path in nx.single_source_shortest_path(G, src, cutoff=max_distance).items():
+                nbonds = len(path) - 1
+                if nbonds < 4 or dst not in sb or src > dst:
+                    continue
+                interior = zip(path[1:-2], path[2:-1])
+                if any(is_axis(u, v) for u, v in interior):
+                    out.add((sb[src], sb[dst]))
+                    out.add((sb[dst], sb[src]))
+    return out

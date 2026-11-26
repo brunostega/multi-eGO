@@ -764,6 +764,24 @@ def generate_LJ(meGO_ensemble, train_dataset, parameters, prior):
     _term.sub("Set sigma and epsilon")
     meGO_LJ = train_dataset[train_dataset["learned"] == 1].copy()
 
+    # Local pairs (4 to max_bond_separation bonds, written in [ pairs ]): --learn_local_pairs
+    local_mode = getattr(parameters, "learn_local_pairs", "no_phipsi")
+    local_frozen_pairs = None
+    if local_mode != "all":
+        if local_mode == "no_phipsi":
+            local_frozen_pairs = bonded.phipsi_dependent_pairs(meGO_ensemble)
+
+        def _local_frozen_mask(df):
+            local = (df["same_chain"].astype(bool) & (df["bond_distance"] <= config.max_bond_separation)).to_numpy()
+            if local_frozen_pairs is None:  # none
+                return local
+            keys = zip(df["ai"].astype(str), df["aj"].astype(str))
+            return local & np.fromiter((k in local_frozen_pairs for k in keys), dtype=bool, count=len(df))
+
+        frozen_local = _local_frozen_mask(meGO_LJ)
+        _term.note(f"--learn_local_pairs {local_mode}: {int(frozen_local.sum())} local pairs keep the prior")
+        meGO_LJ = meGO_LJ.loc[~frozen_local]
+
     hbond_freeze = getattr(prior, "backbone_c12", None) is not None
     if hbond_freeze:
         from .hbond import HBondSettings
@@ -812,6 +830,8 @@ def generate_LJ(meGO_ensemble, train_dataset, parameters, prior):
             meGO_LJ_sym = apply_symmetries(meGO_ensemble, meGO_LJ, parameters.symmetry)
         meGO_LJ = pd.concat([meGO_LJ, meGO_LJ_sym])
         meGO_LJ.reset_index(inplace=True)
+        if local_mode != "all":
+            meGO_LJ = meGO_LJ.loc[~_local_frozen_mask(meGO_LJ)]
         if hbond_freeze:
             meGO_LJ = meGO_LJ.loc[~_hbond_frozen_mask(meGO_LJ, prior, sb_resnum, min_sep)]
         et = time.time()
