@@ -83,6 +83,15 @@ _args_dict_shared = {
         "The thresholds follow the rule (a contact at the MD threshold against an RC at its threshold gets "
         "epsilon_min); the repulsive rule is the same for both.",
     },
+    "--learn_local_pairs": {
+        "default": "no_phipsi",
+        "type": str,
+        "choices": ["no_phipsi", "none", "all"],
+        "help": "Which local intramolecular pairs (4-5 bonds apart, written in [ pairs ]) are learned. "
+        "no_phipsi (default): not those whose distance depends on a backbone phi/psi torsion (the backbone "
+        "Ramachandran distribution is left to the dihedrals / CMAPs); none: no local pair is learned; "
+        "all: every local pair is learned (previous behaviour). Pairs that are not learned keep the prior.",
+    },
     "--hbond": {
         "default": False,
         "action": "store_true",
@@ -340,6 +349,9 @@ def validate_args(args):
         raise ValueError(f"--backend must be 'openmm', 'gromacs' or 'both', got {args.backend!r}")
     if getattr(args, "backbone", "gromos") not in ("gromos", "cmap"):
         raise ValueError(f"--backbone must be 'gromos' or 'cmap', got {args.backbone!r}")
+
+    if getattr(args, "learn_local_pairs", "no_phipsi") not in ("no_phipsi", "none", "all"):
+        raise ValueError(f"--learn_local_pairs must be 'no_phipsi', 'none' or 'all', got {args.learn_local_pairs!r}")
 
     if getattr(args, "hbond", False):
         if args.hbond_epsilon_local is None:
